@@ -29,15 +29,19 @@ class _FakeServer:
 class _SilentServer:
     """Accepts the connection and reads the request, but never responds -
     simulating Audacity blocked on a native dialog it can't dismiss itself."""
+    def __init__(self):
+        self._writer = None
+
     async def _handle(self, reader, writer):
         await reader.readline()
-        # Deliberately never write a response, never close - but DO keep a
-        # strong reference to the writer. Without this, once _handle returns,
-        # (reader, writer) have no other referent and can be garbage
-        # collected at any time, which closes the underlying transport -
-        # racing the client's short timeout non-deterministically (confirmed
-        # flaky in CI: read returned EOF - "connection closed" - instead of
-        # the intended TimeoutError, depending on GC timing per platform).
+        # Deliberately never write a response here - but DO keep a strong
+        # reference to the writer, and explicitly close it in stop() (below).
+        # Without keeping the reference, once _handle returns, (reader,
+        # writer) have no other referent and can be garbage collected at any
+        # time, which closes the underlying transport - racing the client's
+        # short timeout non-deterministically (confirmed flaky in CI: read
+        # returned EOF - "connection closed" - instead of the intended
+        # TimeoutError, depending on GC timing per platform).
         self._writer = writer
 
     async def start(self):
@@ -46,6 +50,15 @@ class _SilentServer:
 
     async def stop(self):
         self.server.close()
+        # Python 3.12+ changed Server.wait_closed() to also wait for open
+        # connections to close, not just the listening socket. This
+        # connection is deliberately never closed by _handle (simulating a
+        # stuck dialog) - without explicitly closing it here too,
+        # wait_closed() hangs forever on 3.12+ (confirmed live: every
+        # Python 3.12/3.13 CI job hung until killed, every 3.10/3.11 job
+        # passed normally - the version boundary matches exactly).
+        if self._writer is not None:
+            self._writer.close()
         await self.server.wait_closed()
 
 

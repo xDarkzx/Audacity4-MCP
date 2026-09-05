@@ -22,6 +22,10 @@ jobs:
 
   test:
     runs-on: ${{ matrix.os }}
+    # Hard backstop: a hung test would otherwise run until GitHub's default
+    # 360-minute job timeout. 10 minutes is generous for a suite that
+    # normally finishes in seconds.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
