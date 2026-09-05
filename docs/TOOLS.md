@@ -117,6 +117,7 @@ Non-destructive — stays adjustable, removable, and its native plugin GUI can s
 
 | Tool | Description |
 |---|---|
+| `suggest_and_add_effect(track_id, category)` | Auto-pick a good *installed* plugin for a goal and add it as a realtime effect — no need to know which of your VSTs does reverb/compression/EQ/etc. `category`: one of `reverb`, `compressor`, `eq`, `delay`, `limiter`, `distortion`, `gate`, `chorus`, `phaser`, `flanger`, `deesser`. Matches by keyword against title/vendor (VST3 plugins don't reliably self-report a category), with a soft preference for a few well-regarded vendors — not an objective quality ranking, there isn't one. Returns `alternatives` too, so the pick isn't a black box. |
 | `add_realtime_effect(track_id, effect_id)` | Add an effect to a track's chain, or the Master bus (`track_id=-2`). **Requires the real `id` from `list_effects`, not `title`** — no title fallback here, unlike destructive `apply-effect`. |
 | `list_realtime_effects(track_id)` | List a chain's effects: index, name, active state. |
 | `remove_realtime_effect(track_id, index)` | Remove by index. |
