@@ -2,7 +2,42 @@
 
 All tools take/return plain JSON. Every tool listed here maps to a real command implemented and registered in `Audacity4-Dev`'s `src/mcp/` module — nothing here is aspirational. Where a tool has a genuinely non-obvious quirk (confirmed by live testing against a real running Audacity4-Dev instance), it's called out below; see each tool's own docstring for the full detail.
 
-Jump to: [Transport](#transport) · [Project](#project) · [Track](#track) · [Selection](#selection) · [Edit](#edit) · [Effects](#effects) · [Realtime/VST3 Effects](#realtimevst3-effects) · [Generate](#generate) · [Labels](#labels) · [Analysis](#analysis) · [Transcription](#transcription-experimental) · [Cleanup Pipelines](#cleanup-pipelines)
+Jump to: [Tool Profiles](#tool-profiles) · [Transport](#transport) · [Project](#project) · [Track](#track) · [Selection](#selection) · [Edit](#edit) · [Effects](#effects) · [Realtime/VST3 Effects](#realtimevst3-effects) · [Generate](#generate) · [Labels](#labels) · [Analysis](#analysis) · [Transcription](#transcription-experimental) · [Cleanup Pipelines](#cleanup-pipelines)
+
+Everything below is the **full** profile (156 tools). See [Tool Profiles](#tool-profiles) if you want your MCP client to only load the tools for one workflow.
+
+## Tool Profiles
+
+By default the server registers every tool below. Set `AUDACITY4_MCP_PROFILE` in your MCP client config's `env` block to load a smaller, workflow-scoped subset instead — useful if you want to keep a session's tool-schema footprint down and don't need, say, VST3 realtime-effect control for a pure transcription task.
+
+| Profile | Modules loaded | Good for |
+|---|---|---|
+| `full` (default) | all 12 | Everything — full v4 tool access. |
+| `cleanup` | transport, track, project, selection, effects, realtime_effects, cleanup_tools, analysis | Podcast/audiobook/vocal cleanup and mastering, no cutting/labeling. |
+| `editing` | transport, track, edit, selection, project, label | Cutting, trimming, splitting, labeling — no effects/pipelines. |
+| `mastering` | transport, track, project, selection, effects, realtime_effects, cleanup_tools, generate | Music mastering and sound generation. |
+| `transcription` | transport, track, project, transcription, label | Transcribe-and-label workflows only. |
+| `minimal` | transport, track, project | Bare playback/track/project access. |
+
+```json
+{
+  "mcpServers": {
+    "audacity4": {
+      "command": "audacity4-mcp",
+      "env": { "AUDACITY4_MCP_PROFILE": "cleanup" }
+    }
+  }
+}
+```
+
+Fine-grained overrides layer on top of whichever profile you pick, via comma-separated env vars: `AUDACITY4_MCP_INCLUDE_MODULES`, `AUDACITY4_MCP_EXCLUDE_MODULES`, `AUDACITY4_MCP_INCLUDE_TOOLS`, `AUDACITY4_MCP_EXCLUDE_TOOLS`.
+
+Check what a profile actually registers without starting a real session:
+
+```bash
+audacity4-mcp --profile-info --profile cleanup
+audacity4-mcp --profile-info --profile full --json
+```
 
 ## Transport
 
@@ -15,6 +50,7 @@ Jump to: [Transport](#transport) · [Project](#project) · [Track](#track) · [S
 | `transport_record()` | Start recording on a new track. Needs a working input device — dispatches without error but won't actually record if none is configured. |
 | `transport_get_play_position()` | Get playhead position, whether playback is active, and current selection start/end. |
 | `transport_play_region(start, end)` | Select and play a time region from its beginning. Uses the dedicated `play-selection` action — an earlier `select-time` + `play-stop` composition was tried and confirmed broken (ignored the just-set selection). |
+| `transport_play()` | Start playback unconditionally. Unlike `transport_play_stop` (a toggle), never stops playback that's already running — checks position/playing state first and only toggles if not already playing. |
 
 ## Project
 
@@ -45,6 +81,7 @@ Jump to: [Transport](#transport) · [Project](#project) · [Track](#track) · [S
 | `track_resample(rate)` | Resample selected track(s), 1–384000 Hz. |
 | `track_get_info(track_id)` | Full detail for one track (title/type/rate/mute/solo + full clip or label list). Takes the real `track_id` from `project_get_info`, **not** the 0-based index used elsewhere. |
 | `track_mute(track, mute=True)` | Convenience wrapper over `track_set_properties`. |
+| `track_mute_all()` / `track_unmute_all()` | Mute/unmute every track in the project by real track id (v4-exclusive — iterates the actual track list server-side, avoiding the index-shift risk of doing this one `track_set_properties` call per track from the client side). |
 
 Not implemented, deliberately: `track_mix_and_render`, `track_stereo_to_mono`, `track_align_end_to_end` — no v4 engine support exists for these yet; shipping them would silently no-op or break.
 
@@ -140,7 +177,7 @@ Non-destructive — stays adjustable, removable, and its native plugin GUI can s
 | `remove_realtime_effect(track_id, index)` | Remove by index. |
 | `set_realtime_effect_active(track_id, index, active)` | Enable/bypass without removing. |
 | `list_effect_parameters(track_id, index)` | Real, plugin-reported parameters — name, units, min/max/default/current value, formatted string. Works uniformly across Builtin/VST3/LV2/AudioUnit. |
-| `set_effect_parameter(track_id, index, parameter_id, value)` | Set one parameter to an exact value. **VST3 min/max is typically normalized 0–1** for some plugins but real display units (e.g. log2-Hz, dB) for others — always re-read `currentValueString` after setting rather than assuming the input scale. See [Known Gaps](../README.md#known-gaps) for the discrete/list-parameter limitation. |
+| `set_effect_parameter(track_id, index, parameter_id, value)` | Set one parameter to an exact value. **VST3 min/max is typically normalized 0–1** for some plugins but real display units (e.g. log2-Hz, dB) for others — always re-read `currentValueString` after setting rather than assuming the input scale, AND re-read again after some time has passed — the command reporting success with the right value doesn't guarantee it stuck. See [Known Gaps](../README.md#known-gaps): this can silently revert on some plugins (confirmed on FabFilter Pro-Q 3's per-band controls), for continuous parameters too, not just discrete ones. |
 | `list_effect_presets(track_id, index)` | Real factory presets, if the plugin format exposes any via the standard VST3 API. Empty is a normal result for plugins (FabFilter, Valhalla) that keep presets in their own custom in-plugin browser instead. |
 | `apply_effect_preset(track_id, index, preset_id)` | Apply a factory preset by id. |
 
@@ -166,6 +203,7 @@ Fills the currently selected time range — call `select_region` first to contro
 | `label_add(text="")` | Add a label at the current selection/playback position. |
 | `label_remove(key)` | Remove by key (`"trackId:itemId"`). |
 | `label_update_text(key, text)` | Change a label's text. |
+| `label_edit(key, text=None, start=None, end=None)` | Change a label's text and/or time range in one call — composes `label_update_text` with a time move, only touching fields you pass. |
 | `label_add_at(start, end, text="")` | Add a label at an exact time range regardless of current selection (changes selection as a side effect). |
 | `label_add_batch(labels)` | Add multiple labels in one call: `[{"start", "end", "text"}, ...]`. |
 | `label_get_all()` | Labels as structured data (key/text/start/end). |
@@ -176,6 +214,10 @@ Fills the currently selected time range — call `select_region` first to contro
 | `label_silence_regions()` | Silence audio under every label, timeline length unchanged. |
 | `label_split_regions()` | Split clips at every label boundary. |
 | `label_join_regions()` | Join clips across every labeled region. |
+| `label_import(path)` | Import labels from a standard tab-separated `start\tend\ttext` label file. No C++ import primitive exists in v4 (unlike v3's `ImportLabels`) — implemented in pure Python, parsing the file directly. Unparseable lines are skipped and reported, not fatal. |
+| `label_export(path, overwrite=False)` | Export all labels to the same tab-separated format `label_import` reads back. Also pure Python — no v4 export primitive. |
+| `label_export_chapters(path, format="simple", overwrite=False)` | Export labels as a chapter/marker file — `simple` (HH:MM:SS.mmm + title), `cue` (cue sheet), or `podlove` (Podlove Simple Chapters JSON). Untitled labels become "Chapter 1", "Chapter 2", etc. |
+| `label_export_audio_segments(directory)` | Export the audio under each label as its own mono WAV file, named from the label text. Point labels (zero length) are skipped. Existing files are never overwritten. Always tell the user the output directory before calling. |
 
 ## Analysis
 
@@ -210,12 +252,13 @@ One-click, multi-step pipelines. All run in the background — call returns a `j
 
 | Tool | Description |
 |---|---|
+| `auto_cleanup_audio(remove_noise=True, remove_clicks=False)` | Safe cleanup that does NOT touch loudness or dynamics: DC offset removal → noise reduction (opt) → click removal (opt). No compression, no normalize, no LUFS. Use when levels are already good and only artifact removal is wanted, or there's no clear podcast/audiobook/vocal/live category. |
 | `auto_cleanup_podcast(remove_noise=True)` | DC offset → noise reduction → compress 4:1 → safe LUFS -16 (Apple Podcasts target) with clip-safe fallback. |
 | `auto_audiobook_mastering(remove_noise=True)` | DC offset → noise reduction → compress 2.5:1 → RMS -20dB (clip-checked) → peak cap -3.5dB. Targets ACX/Audible spec. |
 | `auto_cleanup_interview(remove_noise=True)` | Lighter-touch version of the podcast pipeline — preserves natural conversation dynamics. |
 | `auto_cleanup_vocal(remove_noise=True)` | DC offset → noise reduction 10dB → compress 3:1 → presence EQ → safe LUFS loudness. |
 | `auto_cleanup_live()` | Aggressive: DC offset → click removal → noise reduction 12dB (always on) → compress 5:1 → safe LUFS. First 0.5s must be room tone. |
-| `auto_master_music(style="edm", noise_reduce=False)` | Genre-tuned mastering (`edm`/`hiphop`/`rock`/`pop`/`classical`/`acoustic`): compression + bass/treble sweetening + safe peak ceiling, no fixed loudness target. |
+| `auto_master_music(style="edm", noise_reduce=False)` | Genre-tuned mastering (`edm`/`hiphop`/`rock`/`pop`/`classical`/`acoustic`): click removal → compression → bass/treble sweetening → safe loudness push toward a real, published integrated-LUFS target for that genre (EDM -7.5, hip-hop -9.0, pop -9.5, rock -10.5, classical/acoustic -14.0 — clip-checked first, falls back to peak-only reduction if hitting the target would clip). **Can make an already-loud track measure quieter** — it targets a specific published loudness level, not "as loud as possible." |
 | `auto_lofi_effect(intensity="medium")` | `light`/`medium`/`heavy` lo-fi warmth + compression + peak ceiling. Not yet the full frequency-cutoff filtering v3 had. |
 | `check_pipeline_status(job_id)` | Poll a running pipeline. |
 

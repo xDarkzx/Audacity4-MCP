@@ -86,6 +86,19 @@ For Claude Desktop or Claude Code, add to your MCP config (`claude_desktop_confi
 
 Restart your client. It should now see the full tool list from [TOOLS.md](TOOLS.md).
 
+**Optional — trim the tool list for a specific workflow.** By default every tool loads. To load only what one workflow needs (smaller schema footprint per session), add an `env` block picking a [profile](TOOLS.md#tool-profiles):
+
+```json
+{
+  "mcpServers": {
+    "audacity4": {
+      "command": "audacity4-mcp",
+      "env": { "AUDACITY4_MCP_PROFILE": "cleanup" }
+    }
+  }
+}
+```
+
 ## Troubleshooting
 
 - **Connection refused**: Audacity4-Dev isn't running, or its `mcp` module failed to start — check the Audacity window/console for errors.
