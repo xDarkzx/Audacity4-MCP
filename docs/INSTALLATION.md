@@ -4,11 +4,41 @@ Audacity4MCP has two halves that both need to be running: this Python MCP server
 
 ## 1. Build and run Audacity4-Dev
 
-`Audacity4-Dev` is a fork of Audacity 4 with a `src/mcp/` module added that starts a TCP JSON-RPC server on `127.0.0.1:2212` as soon as Audacity launches. Follow its own [BUILDING.md](../../Audacity4-Dev/BUILDING.md) for the base Audacity build (currently tested on Windows with MSVC / Visual Studio + Ninja only).
+`Audacity4-Dev` is a fork of Audacity 4 with a `src/mcp/` module added that starts a TCP JSON-RPC server on `127.0.0.1:2212` as soon as Audacity launches. It's built the same way as upstream Audacity 4 (see its own [BUILDING.md](../../Audacity4-Dev/BUILDING.md) for installing Qt/CMake/Ninja/etc. first) — this section covers only the exact commands that actually work on this project's tested setup (Windows, MSVC, Ninja) and the fork-specific gotchas that BUILDING.md doesn't mention.
 
-Once built, launch the resulting `Audacity4.exe` (deployed under `src/app/bin/` in the build tree, not the raw CMake build directory) and open or create a project. The `mcp` module has no visible UI — you'll know it's up if this server can connect to it (step 3 below).
+**Prerequisite:** Visual Studio (2022 or newer) with the "Desktop development with C++" workload, plus Qt 6.10, CMake, and Ninja on PATH — see BUILDING.md. On Windows, the MSVC compiler environment must be loaded into the shell *before* running any `cmake`/build command below — a plain terminal won't have it. Do this once per terminal session:
 
-If you change anything under `src/mcp/`, a `cmake` reconfigure is required before rebuilding (CMakeLists.txt changes aren't picked up by an incremental build alone).
+```bat
+"C:\Program Files\Microsoft Visual Studio\<year>\<edition>\VC\Auxiliary\Build\vcvars64.bat"
+```
+
+(Path varies by VS version/edition — find yours under `...\Microsoft Visual Studio\<version>\<edition>\VC\Auxiliary\Build\`.)
+
+**Configure** (first time only, and again any time `CMakeLists.txt` under `src/mcp/` — or anywhere else — changes; an incremental build alone will not pick up CMakeLists changes):
+
+```bash
+cmake --preset audacity-debug
+```
+
+**Build** (every time, from the same vcvars-loaded shell):
+
+```bash
+cmake --build build/audacity-debug
+```
+
+**Install/deploy** — this is the step that actually produces a runnable `Audacity4.exe`; the raw build directory (`build/audacity-debug/`) does not contain a directly launchable app:
+
+```bash
+cmake --install build/audacity-debug
+```
+
+This deploys to `src/app/bin/Audacity4.exe` (per `CMAKE_INSTALL_PREFIX` in the preset). **Launch that binary**, not anything under `build/`.
+
+Open or create a project. The `mcp` module has no visible UI — you'll know it's up if this server can connect to it (step 3 below).
+
+**Closing it down:** always close Audacity4 cleanly from its own window (or ask it to close), never force-kill the process (`taskkill /F`, Task Manager "End Task", etc.). A force-kill corrupts session-recovery state and causes a recurring "convert project" popup on every subsequent launch until that state is cleared out.
+
+**If a rebuild fails with a file-lock error (`LNK1168`)**: Audacity4.exe is still running and holding the binary open. Close it (cleanly, per above) before rebuilding.
 
 ## 2. Install this server
 
