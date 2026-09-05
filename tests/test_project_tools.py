@@ -206,3 +206,33 @@ async def test_project_get_info_calls_real_command(monkeypatch):
     await fake_mcp.tools["project_get_info"]()
 
     fake_bridge.call.assert_called_once_with("project-get-info", {})
+
+
+@pytest.mark.asyncio
+async def test_project_get_metadata_calls_real_command(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+
+    await fake_mcp.tools["project_get_metadata"]()
+
+    fake_bridge.call.assert_called_once_with("project-get-metadata", {})
+
+
+@pytest.mark.asyncio
+async def test_project_set_metadata_calls_real_command_with_only_given_fields(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+
+    await fake_mcp.tools["project_set_metadata"](artist="Test Artist", year="2026")
+
+    fake_bridge.call.assert_called_once_with(
+        "project-set-metadata", {"artist": "Test Artist", "year": "2026"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_project_set_metadata_rejects_no_fields(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+
+    with pytest.raises(ValueError):
+        await fake_mcp.tools["project_set_metadata"]()
+
+    fake_bridge.call.assert_not_called()

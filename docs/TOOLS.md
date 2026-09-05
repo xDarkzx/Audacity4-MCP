@@ -30,6 +30,7 @@ Jump to: [Transport](#transport) · [Project](#project) · [Track](#track) · [S
 | `project_export_selection(path, overwrite=False)` | Export just the current selection (mono, 44.1kHz WAV). |
 | `project_save()` | Save the current project. Refuses if never saved before or nothing changed. |
 | `project_get_info()` | Path, display name, unsaved-changes state, duration, and the full track list (id/title/type/rate/mute/solo/clip count) — excludes label tracks. |
+| `project_get_metadata()` / `project_set_metadata(artist=, track_title=, album=, track_number=, year=, comments=)` | Real ID3-style project tags. **A brand new project's `year` is not empty** — confirmed live it defaults to `"2018"` (a stale template default, not today's date). Only fields you pass to the setter are changed. |
 | `recent_commands()` | List recently executed MCP commands with id/timestamp/success/message. |
 | `command_status(command_id)` | Look up a previous command's recorded result by id. |
 

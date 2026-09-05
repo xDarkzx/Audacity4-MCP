@@ -182,3 +182,44 @@ def register(mcp: FastMCP):
         mute/solo, clip count). Use a track's id with track_get_info for its
         full clip (or label) list."""
         return await bridge.call("project-get-info", {})
+
+    @mcp.tool()
+    async def project_get_metadata() -> dict:
+        """Get project metadata tags: artist, track title, album, track
+        number, year, comments. NOTE: a brand new project's "year" field is
+        NOT empty - confirmed live it defaults to "2018" (a stale template
+        default, not today's date)."""
+        return await bridge.call("project-get-metadata", {})
+
+    @mcp.tool()
+    async def project_set_metadata(
+        artist: str | None = None, track_title: str | None = None, album: str | None = None,
+        track_number: str | None = None, year: str | None = None, comments: str | None = None,
+    ) -> dict:
+        """Set one or more project metadata tags. Only the fields you pass
+        are changed - pass an empty string to clear a field.
+
+        Args:
+            artist: Artist name.
+            track_title: Track title.
+            album: Album title.
+            track_number: Track number.
+            year: Year.
+            comments: Comments.
+        """
+        params = {}
+        if artist is not None:
+            params["artist"] = artist
+        if track_title is not None:
+            params["track_title"] = track_title
+        if album is not None:
+            params["album"] = album
+        if track_number is not None:
+            params["track_number"] = track_number
+        if year is not None:
+            params["year"] = year
+        if comments is not None:
+            params["comments"] = comments
+        if not params:
+            raise ValueError("Provide at least one of artist/track_title/album/track_number/year/comments")
+        return await bridge.call("project-set-metadata", params)
