@@ -1,6 +1,7 @@
 import asyncio
+import sys
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import server4.tools.transcription_tools as transcription_tools
 
 
@@ -155,6 +156,15 @@ async def test_background_worker_reports_export_failure(monkeypatch, tmp_path):
     """If export-wav succeeds per the bridge mock but no file actually appears on
     disk, the worker should report a clean error instead of crashing forward into
     whisper model loading against a nonexistent file."""
+    # This is the only test that awaits the background task to completion, so
+    # it's the only one that reaches the real faster-whisper dependency check.
+    # faster-whisper is a genuinely optional dependency (not installed by a
+    # plain `pip install -e ".[dev]"`) - fake its presence here so this test's
+    # outcome depends on the export-failure logic being tested, not on
+    # whether faster-whisper happens to be installed on whatever machine runs
+    # it (confirmed live: passed on a dev machine that has it installed for
+    # unrelated reasons, failed in CI, which correctly doesn't).
+    monkeypatch.setitem(sys.modules, "faster_whisper", MagicMock())
     fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
 
     result = await fake_mcp.tools["transcribe_audio"]()
