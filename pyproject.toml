@@ -33,3 +33,14 @@ packages = ["server4"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
+
+[tool.ruff.lint]
+# Real bugs (F, pyflakes) and real security patterns (S, bandit port) -
+# deliberately excludes E/W (pycodestyle style/formatting), which isn't
+# worth enforcing for this project.
+select = ["F", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# assert is how pytest tests are written - not a stripped-under-`-O`
+# production risk, since tests never ship or run with -O.
+"tests/*" = ["S101"]

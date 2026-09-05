@@ -1,6 +1,5 @@
 import struct
 import wave
-import pytest
 from server4.tools.analysis_tools import _measure_wav
 
 

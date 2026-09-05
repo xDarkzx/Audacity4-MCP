@@ -1,4 +1,3 @@
-import pytest
 from server4.main import mcp
 
 
