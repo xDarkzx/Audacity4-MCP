@@ -221,3 +221,67 @@ async def test_auto_lofi_effect_rejects_unknown_intensity(monkeypatch):
 
     with pytest.raises(ValueError, match="intensity must be one of"):
         await fake_mcp.tools["auto_lofi_effect"](intensity="extreme")
+
+
+@pytest.mark.asyncio
+async def test_auto_master_music_edm_targets_real_lufs_when_safe(monkeypatch):
+    """A quiet-enough track should get pushed toward EDM's real, cited -7.5 LUFS
+    target, not just have its peaks capped."""
+    fake_bridge = AsyncMock()
+    fake_bridge.call.return_value = {"content": [{"text": "ok"}], "isError": False}
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+
+    async def _fake_measure(bridge):
+        return {"peak_db": -20.0, "overall_rms_db": -25.0}
+    monkeypatch.setattr(cleanup_tools, "_measure_current", _fake_measure)
+
+    fake_mcp = _FakeMCP()
+    cleanup_tools.register(fake_mcp)
+
+    result = await fake_mcp.tools["auto_master_music"](style="edm", noise_reduce=False)
+    job = cleanup_tools._jobs[result["job_id"]]
+    await job["_task"]
+
+    assert job["status"] == "complete"
+    loudness_calls = [
+        call.args[1]["params"]
+        for call in fake_bridge.call.call_args_list
+        if call.args[0] == "apply-effect" and call.args[1].get("effect_id") == "Loudness Normalization"
+    ]
+    assert len(loudness_calls) == 1
+    assert "LUFSLevel=-7.5" in loudness_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_auto_master_music_falls_back_to_peak_reduction_when_target_would_clip(monkeypatch):
+    """A track already louder than its genre target should get peak-reduced,
+    not pushed even louder toward a target it's already past."""
+    fake_bridge = AsyncMock()
+    fake_bridge.call.return_value = {"content": [{"text": "ok"}], "isError": False}
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+
+    async def _fake_measure(bridge):
+        return {"peak_db": -1.5, "overall_rms_db": -13.3}
+    monkeypatch.setattr(cleanup_tools, "_measure_current", _fake_measure)
+
+    fake_mcp = _FakeMCP()
+    cleanup_tools.register(fake_mcp)
+
+    result = await fake_mcp.tools["auto_master_music"](style="edm", noise_reduce=False)
+    job = cleanup_tools._jobs[result["job_id"]]
+    await job["_task"]
+
+    assert job["status"] == "complete"
+    normalize_calls = [
+        call.args[1]["params"]
+        for call in fake_bridge.call.call_args_list
+        if call.args[0] == "apply-effect" and call.args[1].get("effect_id") == "Normalize"
+    ]
+    assert len(normalize_calls) == 1
+    assert "PeakLevel=-2.0" in normalize_calls[0]
+    loudness_calls = [
+        call.args[1]
+        for call in fake_bridge.call.call_args_list
+        if call.args[0] == "apply-effect" and call.args[1].get("effect_id") == "Loudness Normalization"
+    ]
+    assert loudness_calls == []

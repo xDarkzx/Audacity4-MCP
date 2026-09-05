@@ -145,12 +145,12 @@ async def _safe_loudness_step(job: dict, bridge, target: float = -16.0, mode: st
             except Exception as e:
                 job["steps_failed"].append(f"loudness normalize: {e}")
 
-    if peak_before > -3.0:
+    if peak_before > peak_ceiling:
         await bridge.call("select-all", {})
-        params = _params(PeakLevel=-3.0, RemoveDcOffset=False, ApplyVolume=True, StereoIndependent=False)
+        params = _params(PeakLevel=peak_ceiling, RemoveDcOffset=False, ApplyVolume=True, StereoIndependent=False)
         try:
             await bridge.call("apply-effect", {"effect_id": "Normalize", "params": params})
-            job["steps_applied"].append(f"peaks reduced to -3dB ({mode.upper()} target would have clipped)")
+            job["steps_applied"].append(f"peaks reduced to {peak_ceiling}dB ({mode.upper()} target would have clipped)")
         except Exception as e:
             job["steps_failed"].append(f"fallback normalize: {e}")
     else:
@@ -375,23 +375,49 @@ async def _live_pipeline(job: dict, bridge):
         job["error"] = str(e)
 
 
+
+# Genre integrated-LUFS targets below are the midpoint of real, published 2026
+# mastering-industry consensus ranges (not arbitrary) - see sources cited in
+# _mastering_pipeline's docstring. Compression ratio/attack/release and EQ
+# amounts remain general audio-engineering convention (faster attack + more
+# low-end for percussive/bass-heavy genres, gentler/slower for wide-dynamic
+# acoustic material) - genre EQ curves aren't standardized the way loudness
+# targets are, so these are not independently cited.
 _MASTERING_PRESETS = {
     "edm": {"comp_threshold": -12.0, "comp_ratio": 2.5, "comp_attack": 80.0, "comp_release": 150.0,
-            "bass_eq": 2.0, "treble_eq": 1.0, "label": "EDM/Electronic"},
+            "bass_eq": 2.0, "treble_eq": 1.0, "lufs_target": -7.5, "label": "EDM/Electronic"},
     "hiphop": {"comp_threshold": -14.0, "comp_ratio": 2.0, "comp_attack": 100.0, "comp_release": 200.0,
-               "bass_eq": 3.0, "treble_eq": 1.0, "label": "Hip-Hop/Rap"},
+               "bass_eq": 3.0, "treble_eq": 1.0, "lufs_target": -9.0, "label": "Hip-Hop/Rap"},
     "rock": {"comp_threshold": -16.0, "comp_ratio": 2.0, "comp_attack": 100.0, "comp_release": 200.0,
-             "bass_eq": 0.0, "treble_eq": 1.0, "label": "Rock"},
+             "bass_eq": 0.0, "treble_eq": 1.0, "lufs_target": -10.5, "label": "Rock"},
     "pop": {"comp_threshold": -14.0, "comp_ratio": 2.0, "comp_attack": 80.0, "comp_release": 200.0,
-            "bass_eq": 1.0, "treble_eq": 1.5, "label": "Pop"},
+            "bass_eq": 1.0, "treble_eq": 1.5, "lufs_target": -9.5, "label": "Pop"},
     "classical": {"comp_threshold": -24.0, "comp_ratio": 1.3, "comp_attack": 200.0, "comp_release": 500.0,
-                  "bass_eq": 0.0, "treble_eq": 0.0, "label": "Classical/Orchestral"},
+                  "bass_eq": 0.0, "treble_eq": 0.0, "lufs_target": -14.0, "label": "Classical/Orchestral"},
     "acoustic": {"comp_threshold": -20.0, "comp_ratio": 1.5, "comp_attack": 150.0, "comp_release": 300.0,
-                 "bass_eq": 0.0, "treble_eq": 0.0, "label": "Acoustic/Chill"},
+                 "bass_eq": 0.0, "treble_eq": 0.0, "lufs_target": -14.0, "label": "Acoustic/Chill"},
 }
 
 
 async def _mastering_pipeline(job: dict, bridge, preset: dict, noise_reduce: bool):
+    """Genre loudness targets (preset["lufs_target"]) are the midpoint of real,
+    published 2026 mastering-industry consensus ranges, not arbitrary:
+      - EDM/Electronic: -9 to -6 LUFS integrated (hard EDM/bass: -6 to -4)
+      - Hip-Hop/Rap: -11 to -7 LUFS
+      - Pop: -11 to -8 LUFS
+      - Rock: -12 to -9 LUFS
+      - Classical/Acoustic: -14 LUFS or quieter (dynamic range prioritized)
+    (soundcamps.com/blog/spotify-lufs, veniamastering.studio/blog/how-loud-should-your-master-be-in-2026,
+    freshlybakedstudios.com/blog/average-lufs-by-genre - accessed 2026-09-05)
+
+    Peak ceiling is -2dBFS SAMPLE peak, not a real dBTP true-peak measurement -
+    this codebase has no oversampled true-peak meter. True peak can exceed
+    sample peak by up to 3dB on inter-sample peaks (the actual, documented
+    cause of audible "clippy" playback on a track whose sample peak measures
+    fine) - -2dBFS sample peak is a conservative proxy for staying under the
+    -1dBTP ceiling streaming platforms require, not a substitute for real
+    true-peak limiting.
+    """
     try:
         await _run_step(job, "click removal", bridge, "Click removal", _params(Threshold=200, Width=20))
 
@@ -407,9 +433,7 @@ async def _mastering_pipeline(job: dict, bridge, preset: dict, noise_reduce: boo
             await _run_step(job, f"EQ bass+{preset['bass_eq']}dB treble+{preset['treble_eq']}dB", bridge,
                              "Bass and Treble", _params(Bass=preset["bass_eq"], Treble=preset["treble_eq"], Gain=0.0))
 
-        # No fixed loudness target - genre expectations vary too widely (classical
-        # masters much quieter than EDM/hip-hop). Only a peak safety ceiling.
-        await _safe_peak_only_step(job, bridge, ceiling=-3.0)
+        await _safe_loudness_step(job, bridge, target=preset["lufs_target"], mode="lufs", peak_ceiling=-2.0)
 
         job["status"] = "complete"
         job["current_step"] = "done"
@@ -624,13 +648,20 @@ def register(mcp: FastMCP):
     @mcp.tool()
     async def auto_master_music(style: str = "edm", noise_reduce: bool = False) -> dict:
         """ONE-CLICK MUSIC MASTERING: Professionally master your music track with
-        genre-tuned settings. Runs in background - returns a job_id immediately.
-        Use check_pipeline_status to monitor.
+        genre-tuned settings pushed toward a real, published genre loudness
+        target (not just a peak ceiling). Runs in background - returns a job_id
+        immediately. Use check_pipeline_status to monitor.
 
         Pipeline: click removal > noise reduction (opt, off by default for
         produced music) > compression (genre-tuned) > bass/treble sweetening
-        (genre-tuned) > safe peak ceiling (no fixed loudness target - genre
-        expectations vary too widely).
+        (genre-tuned) > safe loudness push toward the genre's real integrated-
+        LUFS target (EDM -7.5, hip-hop -9.0, pop -9.5, rock -10.5, classical/
+        acoustic -14.0 - see _mastering_pipeline's docstring for sources),
+        clip-checked first and falling back to a peak-only reduction if hitting
+        the target would clip. NOTE: if your track was already louder than its
+        genre target going in, this pipeline can make it measure QUIETER, not
+        louder - it targets a specific published loudness level, not "as loud as
+        possible."
 
         Args:
             style: Genre preset - "edm", "hiphop", "rock", "pop", "classical",
