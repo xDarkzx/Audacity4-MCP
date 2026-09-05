@@ -6,11 +6,24 @@ build-backend = "hatchling.build"
 name = "audacity4-mcp"
 version = "0.1.0"
 description = "MCP server for AI-driven audio editing in Audacity 4"
+readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
     "mcp[cli]>=1.0.0",
-    "websockets>=12.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "ruff>=0.15",
+]
+
+[project.urls]
+Homepage = "https://github.com/xDarkzx/Audacity4-MCP"
+Issues = "https://github.com/xDarkzx/Audacity4-MCP/issues"
+Changelog = "https://github.com/xDarkzx/Audacity4-MCP/blob/main/CHANGELOG.md"
 
 [project.scripts]
 audacity4-mcp = "server4.main:main"
