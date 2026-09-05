@@ -15,6 +15,51 @@ class _FakeMCP:
 
 
 @pytest.mark.asyncio
+async def test_list_effects_default_call(monkeypatch):
+    fake_bridge = AsyncMock()
+    fake_bridge.call.return_value = {"content": [], "isError": False}
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    await fake_mcp.tools["list_effects"]()
+
+    fake_bridge.call.assert_called_once_with("list-effects", {"limit": 100})
+
+
+@pytest.mark.asyncio
+async def test_list_effects_with_filters(monkeypatch):
+    fake_bridge = AsyncMock()
+    fake_bridge.call.return_value = {"content": [], "isError": False}
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    await fake_mcp.tools["list_effects"](category="reverb", family="VST3", search="hall", limit=10)
+
+    fake_bridge.call.assert_called_once_with(
+        "list-effects",
+        {"category": "reverb", "family": "VST3", "search": "hall", "limit": 10},
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_effects_rejects_bad_limit(monkeypatch):
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    with pytest.raises(ValueError):
+        await fake_mcp.tools["list_effects"](limit=0)
+
+    fake_bridge.call.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_normalize_builds_correct_params(monkeypatch):
     fake_bridge = AsyncMock()
     monkeypatch.setattr("server4.main.bridge", fake_bridge)
@@ -115,3 +160,173 @@ async def test_get_noise_profile_sends_numeric_bool(monkeypatch):
         "effect_id": "Noise reduction",
         "params": "GetProfile=1",
     })
+
+
+@pytest.mark.asyncio
+async def test_effect_amplify_builds_correct_params(monkeypatch):
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    await fake_mcp.tools["effect_amplify"](ratio=2.0, allow_clipping=True)
+
+    fake_bridge.call.assert_called_once_with("apply-effect", {
+        "effect_id": "Amplify", "params": "Ratio=2.0 AllowClipping=1",
+    })
+
+
+@pytest.mark.asyncio
+async def test_effect_amplify_rejects_out_of_range_ratio(monkeypatch):
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    with pytest.raises(ValueError, match="ratio"):
+        await fake_mcp.tools["effect_amplify"](ratio=1000.0)
+
+
+@pytest.mark.asyncio
+async def test_effect_fade_in_calls_real_command(monkeypatch):
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    await fake_mcp.tools["effect_fade_in"]()
+
+    fake_bridge.call.assert_called_once_with("apply-effect", {"effect_id": "Fade In", "params": ""})
+
+
+@pytest.mark.asyncio
+async def test_effect_fade_out_calls_real_command(monkeypatch):
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    await fake_mcp.tools["effect_fade_out"]()
+
+    fake_bridge.call.assert_called_once_with("apply-effect", {"effect_id": "Fade Out", "params": ""})
+
+
+@pytest.mark.asyncio
+async def test_effect_reverb_builds_correct_wire_keys(monkeypatch):
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    await fake_mcp.tools["effect_reverb"](pre_delay=15.0)
+
+    call_args = fake_bridge.call.call_args
+    assert call_args[0][1]["effect_id"] == "Reverb"
+    # Real v4 wire key is "Delay", not "PreDelay" - confirmed against ReverbEffect's
+    # EffectParameter PreDelay{..., L"Delay", ...} declaration.
+    assert "Delay=15.0" in call_args[0][1]["params"]
+    assert "PreDelay" not in call_args[0][1]["params"]
+
+
+@pytest.mark.asyncio
+async def test_effect_reverb_rejects_out_of_range(monkeypatch):
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    with pytest.raises(ValueError, match="wet_gain"):
+        await fake_mcp.tools["effect_reverb"](wet_gain=50.0)
+
+
+@pytest.mark.asyncio
+async def test_effect_change_pitch_converts_semitones_to_percentage(monkeypatch):
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    await fake_mcp.tools["effect_change_pitch"](semitones=12.0)
+
+    call_args = fake_bridge.call.call_args
+    assert call_args[0][1]["effect_id"] == "Change pitch"
+    assert "Percentage=100.0" in call_args[0][1]["params"]
+
+
+@pytest.mark.asyncio
+async def test_effect_paulstretch_uses_spaced_wire_keys(monkeypatch):
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    await fake_mcp.tools["effect_paulstretch"](stretch_factor=5.0, time_resolution=0.1)
+
+    fake_bridge.call.assert_called_once_with("apply-effect", {
+        "effect_id": "Paulstretch",
+        "params": '"Stretch Factor"=5.0 "Time Resolution"=0.1',
+    })
+
+
+@pytest.mark.asyncio
+async def test_effect_paulstretch_rejects_stretch_below_one(monkeypatch):
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    with pytest.raises(ValueError, match="stretch_factor"):
+        await fake_mcp.tools["effect_paulstretch"](stretch_factor=0.5)
+
+
+@pytest.mark.asyncio
+async def test_effect_reverse_calls_real_command(monkeypatch):
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    await fake_mcp.tools["effect_reverse"]()
+
+    fake_bridge.call.assert_called_once_with("apply-effect", {"effect_id": "Reverse", "params": ""})
+
+
+@pytest.mark.asyncio
+async def test_effect_invert_calls_real_command(monkeypatch):
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    await fake_mcp.tools["effect_invert"]()
+
+    fake_bridge.call.assert_called_once_with("apply-effect", {"effect_id": "Invert", "params": ""})
+
+
+@pytest.mark.asyncio
+async def test_effect_repair_calls_real_command(monkeypatch):
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    await fake_mcp.tools["effect_repair"]()
+
+    fake_bridge.call.assert_called_once_with("apply-effect", {"effect_id": "Repair", "params": ""})
+
+
+@pytest.mark.asyncio
+async def test_effect_sliding_stretch_is_disabled(monkeypatch):
+    """Live-tested and confirmed this effect reliably crashes/hangs the app (a
+    pre-existing engine bug in how SBSMS-family effects trigger extension reload
+    on first invocation - see the comment in effects_tools.py). Disabled at the
+    Python layer rather than left to crash a live session."""
+    fake_bridge = AsyncMock()
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+
+    with pytest.raises(RuntimeError, match="disabled"):
+        await fake_mcp.tools["effect_sliding_stretch"](rate_change_start=10.0)
+
+    fake_bridge.call.assert_not_called()

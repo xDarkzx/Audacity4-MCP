@@ -7,6 +7,8 @@ import wave
 
 from mcp.server.fastmcp import FastMCP
 
+from server4.tools.effects_tools import _params
+
 
 def _temp_wav_path() -> str:
     return os.path.join(tempfile.gettempdir(), f"audacity_mcp_analyze_{uuid.uuid4().hex[:8]}.wav")
@@ -265,3 +267,76 @@ def register(mcp: FastMCP):
         if measurement_error:
             result["measurement_error"] = measurement_error
         return result
+
+    # NOTE: v3 also had analyze_contrast and analyze_plot_spectrum. Confirmed
+    # via this fork's real plugin registry (known_audio_plugins.json) that
+    # neither "Contrast" nor "Plot Spectrum" is registered in this build -
+    # source exists upstream in au3-builtin-effects but never links into this
+    # fork (same class of finding as the missing Echo/Phaser/etc. effects) -
+    # not wrapped here, would return "Effect not found" if they were.
+    # analyze_find_clipping is also absent from the registry - not wrapped.
+
+    @mcp.tool()
+    async def analyze_beat_finder(threshold_percent: int = 65) -> dict:
+        """Find beats in the selected audio and add a label at each one.
+
+        Adds labels to the project's label track (creating one if needed) -
+        call label_list afterward to read the detected beat positions.
+
+        Args:
+            threshold_percent: Sensitivity threshold, 5-100. Lower finds more beats. Default: 65
+        """
+        if not 5 <= threshold_percent <= 100:
+            raise ValueError("threshold_percent must be 5 to 100")
+        params = _params(THRESVAL=threshold_percent)
+        return await bridge.call("apply-effect", {"effect_id": "Beat finder", "params": params})
+
+    @mcp.tool()
+    async def analyze_label_sounds(
+        threshold_db: float = -30.0, measurement: str = "peak",
+        min_silence_duration: float = 1.0, min_label_interval: float = 1.0,
+        label_type: str = "between",
+    ) -> dict:
+        """Detect sounds separated by silence and add a label for each one
+        (or for each silence gap, depending on label_type).
+
+        Adds labels to the project's label track (creating one if needed) -
+        call label_list afterward to read the detected regions.
+
+        Args:
+            threshold_db: Level below which audio counts as silence, -100 to 0. Default: -30.0
+            measurement: How to measure level - "peak", "avg", or "rms". Default: "peak"
+            min_silence_duration: Minimum silence length to count as a gap, in seconds. Default: 1.0
+            min_label_interval: Minimum spacing between labels, in seconds. Default: 1.0
+            label_type: "before"/"after" (point at sound edge), "around" (region around
+                each sound), or "between" (region between sounds - i.e. the silences). Default: "between"
+        """
+        measurement_map = {"peak": 0, "avg": 1, "rms": 2}
+        if measurement not in measurement_map:
+            raise ValueError("measurement must be one of: peak, avg, rms")
+        type_map = {"before": 0, "after": 1, "around": 2, "between": 3}
+        if label_type not in type_map:
+            raise ValueError("label_type must be one of: before, after, around, between")
+        params = _params(**{
+            "THRESHOLD": threshold_db, "MEASUREMENT": measurement_map[measurement],
+            "SIL-DUR": min_silence_duration, "SND-DUR": min_label_interval,
+            "TYPE": type_map[label_type],
+        })
+        return await bridge.call("apply-effect", {"effect_id": "Label sounds", "params": params})
+
+    @mcp.tool()
+    async def analyze_sample_data_export(path: str, limit: int = 100, units: str = "dB") -> dict:
+        """Export raw sample values from the selection to a text/CSV/HTML file.
+
+        Args:
+            path: Absolute output path. Extension determines format (.txt, .csv, .html).
+            limit: Maximum number of samples to export, 1-1000000. Default: 100
+            units: Measurement scale - "dB" or "Linear". Default: "dB"
+        """
+        if not 1 <= limit <= 1000000:
+            raise ValueError("limit must be 1 to 1000000")
+        units_map = {"dB": 0, "Linear": 1}
+        if units not in units_map:
+            raise ValueError('units must be "dB" or "Linear"')
+        params = _params(**{"NUMBER": limit, "UNITS": units_map[units], "FILENAME": path})
+        return await bridge.call("apply-effect", {"effect_id": "Sample data export", "params": params})
