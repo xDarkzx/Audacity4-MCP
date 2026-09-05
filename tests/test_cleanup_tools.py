@@ -40,6 +40,50 @@ async def test_auto_cleanup_podcast_returns_job_id_immediately(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_auto_cleanup_audio_returns_job_id_immediately(monkeypatch):
+    fake_bridge = AsyncMock()
+    fake_bridge.call.return_value = {"content": [{"text": "ok"}], "isError": False}
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+
+    fake_mcp = _FakeMCP()
+    cleanup_tools.register(fake_mcp)
+
+    result = await fake_mcp.tools["auto_cleanup_audio"]()
+
+    assert "job_id" in result
+    assert result["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_auto_cleanup_audio_applies_no_loudness_change(monkeypatch):
+    """The whole point of this pipeline (vs. the named ones) is that it never
+    touches loudness/dynamics - only DC offset and optional noise/click cleanup."""
+    fake_bridge = AsyncMock()
+    fake_bridge.call.return_value = {"content": [{"text": "ok"}], "isError": False}
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+
+    fake_mcp = _FakeMCP()
+    cleanup_tools.register(fake_mcp)
+
+    result = await fake_mcp.tools["auto_cleanup_audio"](remove_noise=False, remove_clicks=True)
+    job = cleanup_tools._jobs[result["job_id"]]
+    await job["_task"]
+
+    assert job["status"] == "complete"
+    assert "DC offset" in job["result"]["message"]
+    assert "click removal" in job["result"]["message"]
+    assert job["result"]["loudness"] == "unchanged (cleanup only)"
+    # Confirm no Compressor/Normalize-for-volume/Loudness effect was ever applied
+    effect_ids = [
+        call.args[1].get("effect_id")
+        for call in fake_bridge.call.call_args_list
+        if call.args[0] == "apply-effect"
+    ]
+    assert "Compressor" not in effect_ids
+    assert "Loudness Normalization" not in effect_ids
+
+
+@pytest.mark.asyncio
 async def test_check_pipeline_status_reports_unknown_job():
     fake_mcp = _FakeMCP()
     cleanup_tools.register(fake_mcp)

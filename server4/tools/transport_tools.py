@@ -1,8 +1,25 @@
+import json
+
 from mcp.server.fastmcp import FastMCP
 
 
 def register(mcp: FastMCP):
     from server4.main import bridge
+
+    @mcp.tool()
+    async def transport_play() -> dict:
+        """Start playback from the current cursor position, unconditionally -
+        unlike transport_play_stop (a toggle), this never stops playback that's
+        already running. There is no dedicated "always play" action in v4 (only
+        a play/stop toggle and play-selection, which requires an actual
+        selection); composed here by checking transport_get_play_position first
+        and only toggling if not already playing.
+        """
+        result = await bridge.call("transport-get-play-position", {})
+        data = json.loads(result["content"][-1]["text"])
+        if data.get("isPlaying"):
+            return {"content": [{"text": "Already playing", "type": "text"}], "isError": False}
+        return await bridge.call("play-stop", {})
 
     @mcp.tool()
     async def transport_play_stop() -> dict:

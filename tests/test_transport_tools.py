@@ -15,6 +15,39 @@ class _FakeMCP:
 
 
 @pytest.mark.asyncio
+async def test_transport_play_starts_playback_when_stopped(monkeypatch):
+    fake_bridge = AsyncMock()
+    fake_bridge.call.side_effect = [
+        {"content": [{"text": '{"isPlaying": false}'}], "isError": False},  # transport-get-play-position
+        {"content": [{"text": "play-stop: playing"}], "isError": False},  # play-stop
+    ]
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+
+    fake_mcp = _FakeMCP()
+    transport_tools.register(fake_mcp)
+
+    await fake_mcp.tools["transport_play"]()
+
+    calls = fake_bridge.call.call_args_list
+    assert calls[0].args == ("transport-get-play-position", {})
+    assert calls[1].args == ("play-stop", {})
+
+
+@pytest.mark.asyncio
+async def test_transport_play_is_a_noop_when_already_playing(monkeypatch):
+    fake_bridge = AsyncMock()
+    fake_bridge.call.return_value = {"content": [{"text": '{"isPlaying": true}'}], "isError": False}
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+
+    fake_mcp = _FakeMCP()
+    transport_tools.register(fake_mcp)
+
+    await fake_mcp.tools["transport_play"]()
+
+    fake_bridge.call.assert_called_once_with("transport-get-play-position", {})
+
+
+@pytest.mark.asyncio
 async def test_transport_play_stop_calls_real_command(monkeypatch):
     fake_bridge = AsyncMock()
     fake_bridge.call.return_value = {"content": [{"text": "play-stop: playing"}], "isError": False}

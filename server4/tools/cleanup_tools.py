@@ -181,6 +181,38 @@ async def _safe_peak_only_step(job: dict, bridge, ceiling: float = -3.0):
         job["steps_applied"].append(f"peaks already at {peak_before}dB (below {ceiling}dB ceiling) - no change needed")
 
 
+async def _cleanup_audio_pipeline(job: dict, bridge, remove_noise: bool, remove_clicks: bool):
+    try:
+        await _run_step(job, "remove DC offset", bridge, "Normalize",
+                         _params(PeakLevel=-1.0, RemoveDcOffset=True, ApplyVolume=False, StereoIndependent=False))
+
+        # NOTE: v3's equivalent pipeline also ran a high-pass filter (80Hz) here
+        # to cut rumble - skipped, since a real high/low-pass filter effect is
+        # confirmed absent from this fork's registry (same finding as the 11
+        # other missing v3 effects - see README's Known Gaps).
+
+        if remove_noise:
+            await _noise_reduction_step(job, bridge, sensitivity=6.0, noise_gain_db=10.0, smoothing_bands=3)
+
+        if remove_clicks:
+            await _run_step(job, "click removal", bridge, "Click removal", _params(Threshold=200, Width=20))
+
+        job["status"] = "complete"
+        job["current_step"] = "done"
+        elapsed = round(time.time() - job["started_at"], 1)
+        job["result"] = {
+            "success": len(job["steps_failed"]) == 0,
+            "message": f"Audio Cleanup: {' > '.join(job['steps_applied'])}" if job["steps_applied"] else "Audio Cleanup: no steps applied",
+            "loudness": "unchanged (cleanup only)",
+            "elapsed_seconds": elapsed,
+        }
+        if job["steps_failed"]:
+            job["result"]["warnings"] = job["steps_failed"].copy()
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+
+
 async def _podcast_pipeline(job: dict, bridge, remove_noise: bool):
     try:
         await _run_step(job, "remove DC offset", bridge, "Normalize",
@@ -440,6 +472,33 @@ async def _lofi_pipeline(job: dict, bridge, preset: dict):
 
 def register(mcp: FastMCP):
     from server4.main import bridge
+
+    @mcp.tool()
+    async def auto_cleanup_audio(remove_noise: bool = True, remove_clicks: bool = False) -> dict:
+        """SAFE CLEANUP: Remove noise and artifacts WITHOUT changing loudness or
+        dynamics. Use this when audio levels are already good and you just want
+        to clean it up. Runs in background - returns a job_id immediately. Use
+        check_pipeline_status to monitor.
+
+        Pipeline: DC offset removal > noise reduction (opt) > click removal (opt).
+        NO compression, NO normalize, NO LUFS. Just clean.
+
+        Args:
+            remove_noise: Apply noise reduction using the first 0.5s as a noise
+                profile. Default: True. IMPORTANT: the first 0.5s should be room
+                tone/silence if this is True.
+            remove_clicks: Remove clicks/pops (useful for vinyl/old recordings).
+                Default: False.
+        """
+        job_id, job = await _create_job("cleanup_audio")
+        if job is None:
+            return _running_job_error()
+        coro = _cleanup_audio_pipeline(job, bridge, remove_noise, remove_clicks)
+        job["_task"] = asyncio.create_task(coro)
+        return {
+            "job_id": job_id, "status": "running",
+            "message": "Audio Cleanup started. Call check_pipeline_status every 15-30s.",
+        }
 
     @mcp.tool()
     async def auto_cleanup_podcast(remove_noise: bool = True) -> dict:
