@@ -31,7 +31,14 @@ class _SilentServer:
     simulating Audacity blocked on a native dialog it can't dismiss itself."""
     async def _handle(self, reader, writer):
         await reader.readline()
-        # Deliberately never write a response, never close.
+        # Deliberately never write a response, never close - but DO keep a
+        # strong reference to the writer. Without this, once _handle returns,
+        # (reader, writer) have no other referent and can be garbage
+        # collected at any time, which closes the underlying transport -
+        # racing the client's short timeout non-deterministically (confirmed
+        # flaky in CI: read returned EOF - "connection closed" - instead of
+        # the intended TimeoutError, depending on GC timing per platform).
+        self._writer = writer
 
     async def start(self):
         self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
