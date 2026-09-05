@@ -78,6 +78,39 @@ async def test_label_import_rejects_missing_file(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_label_edit_updates_text_and_timing_in_one_call(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch)
+    fake_bridge.call.return_value = {"content": [{"text": "ok"}], "isError": False}
+
+    result = await fake_mcp.tools["label_edit"]("0:1", text="Renamed", start=5.0)
+
+    calls = fake_bridge.call.call_args_list
+    assert calls[0].args == ("update-label-text", {"key": "0:1", "text": "Renamed"})
+    assert calls[1].args == ("update-label-time", {"key": "0:1", "start": 5.0})
+    assert result["applied"] == ["text", "start"]
+
+
+@pytest.mark.asyncio
+async def test_label_edit_text_only_does_not_call_update_time(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch)
+    fake_bridge.call.return_value = {"content": [{"text": "ok"}], "isError": False}
+
+    await fake_mcp.tools["label_edit"]("0:1", text="Renamed")
+
+    fake_bridge.call.assert_called_once_with("update-label-text", {"key": "0:1", "text": "Renamed"})
+
+
+@pytest.mark.asyncio
+async def test_label_edit_rejects_no_fields(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch)
+
+    with pytest.raises(ValueError):
+        await fake_mcp.tools["label_edit"]("0:1")
+
+    fake_bridge.call.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_label_export_writes_standard_label_file(monkeypatch, tmp_path):
     path = tmp_path / "out.txt"
     labels = [

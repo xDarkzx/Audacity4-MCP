@@ -103,17 +103,27 @@ def register(mcp: FastMCP):
             raise ValueError("Track index must be >= 0")
         return await bridge.call("track-set-properties", {"track": track, "mute": mute})
 
-    # NOTE: v3 also had track_mute_all/track_unmute_all, track_select,
-    # track_mix_and_render(+to_new_track), track_stereo_to_mono, and
-    # track_align_end_to_end.
+    @mcp.tool()
+    async def track_mute_all() -> dict:
+        """Mute every track in the project, including any not currently selected.
+
+        Uses a dedicated C++ command that iterates the real track list by id -
+        NOT composed from track_set_properties' index-based addressing, which
+        would silently hit the wrong track whenever a label track sits before
+        an audio track (project_get_info's track list excludes label tracks,
+        but the raw index space includes them).
+        """
+        return await bridge.call("track-mute-all", {})
+
+    @mcp.tool()
+    async def track_unmute_all() -> dict:
+        """Unmute every track in the project, including any not currently selected."""
+        return await bridge.call("track-unmute-all", {})
+
+    # NOTE: v3 also had track_select, track_mix_and_render(+to_new_track),
+    # track_stereo_to_mono, and track_align_end_to_end.
     # - track_select: already covered by selection_tools.select_tracks(track,
     #   count=1) - not duplicated here under a second name.
-    # - track_mute_all/unmute_all: deliberately NOT built. track-set-properties
-    #   indexes through ALL tracks from trackList() (including label tracks),
-    #   but project-get-info's track array excludes label tracks - looping
-    #   "for i in range(trackCount)" against project-get-info's count would
-    #   silently mute the wrong track whenever a label track is interspersed.
-    #   No bulk-mute-by-id primitive exists to do this safely yet.
     # - track_mix_and_render, track_stereo_to_mono (real in-place downmix, not
     #   the existing splitStereoTracksToLRMono/CenterMono which does the
     #   opposite), and track_align_end_to_end: confirmed these features don't

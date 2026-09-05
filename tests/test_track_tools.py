@@ -163,3 +163,21 @@ async def test_track_mute_rejects_negative_index(monkeypatch):
         await fake_mcp.tools["track_mute"](track=-1)
 
     fake_bridge.call.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_track_mute_all_calls_real_command(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch, {"content": [{"text": "Muted 3 track(s)"}], "isError": False})
+
+    await fake_mcp.tools["track_mute_all"]()
+
+    fake_bridge.call.assert_called_once_with("track-mute-all", {})
+
+
+@pytest.mark.asyncio
+async def test_track_unmute_all_calls_real_command(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch, {"content": [{"text": "Unmuted 3 track(s)"}], "isError": False})
+
+    await fake_mcp.tools["track_unmute_all"]()
+
+    fake_bridge.call.assert_called_once_with("track-unmute-all", {})

@@ -123,6 +123,36 @@ def register(mcp: FastMCP):
         return await bridge.call("update-label-text", {"key": key, "text": text})
 
     @mcp.tool()
+    async def label_edit(key: str, text: str | None = None, start: float | None = None, end: float | None = None) -> dict:
+        """Edit an existing label's text and/or timing in one call. Only the
+        fields you pass are changed.
+
+        Args:
+            key: The label's key, in "trackId:itemId" format (from label_list).
+            text: New label text. Default: unchanged.
+            start: New start time in seconds. Default: unchanged.
+            end: New end time in seconds. Default: unchanged.
+        """
+        if text is None and start is None and end is None:
+            raise ValueError("Provide at least one of text, start, end")
+        applied = []
+        if text is not None:
+            await bridge.call("update-label-text", {"key": key, "text": text})
+            applied.append("text")
+        if start is not None or end is not None:
+            params = {"key": key}
+            if start is not None:
+                params["start"] = start
+            if end is not None:
+                params["end"] = end
+            await bridge.call("update-label-time", params)
+            if start is not None:
+                applied.append("start")
+            if end is not None:
+                applied.append("end")
+        return {"key": key, "applied": applied}
+
+    @mcp.tool()
     async def label_add_at(start: float, end: float, text: str = "") -> dict:
         """Add a label at an exact time range, regardless of the current selection.
 

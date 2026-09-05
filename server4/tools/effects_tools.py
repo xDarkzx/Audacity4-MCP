@@ -436,6 +436,9 @@ def register(mcp: FastMCP):
     # different effects ("Filter Curve EQ" and "Graphic EQ"), not a drop-in
     # substitute for v3's curve_name-based API - not wrapped here, would need
     # its own design pass.
+    # v3's "VocalReductionAndIsolation" is ALSO confirmed absent from this
+    # registry (same technique: checked known_audio_plugins.json directly,
+    # not just source presence) - genuinely no v4 equivalent, not wrapped.
 
     @mcp.tool()
     async def effect_remove_dc_offset() -> dict:
