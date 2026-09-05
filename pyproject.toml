@@ -8,8 +8,28 @@ version = "0.1.0"
 description = "MCP server for AI-driven audio editing in Audacity 4"
 readme = "README.md"
 license = "Apache-2.0"
+authors = [
+    { name = "Daniel Hodgetts" },
+]
+keywords = ["audacity", "audacity4", "mcp", "audio", "ai", "model-context-protocol", "vst3", "claude", "audio-editing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Sound/Audio :: Editors",
+]
 requires-python = ">=3.10"
 dependencies = [
+    # Upper-bounded deliberately: mcp 2.0.0 is a real, confirmed breaking
+    # release (renamed/restructured mcp.server.fastmcp, which every tool
+    # module here imports as FastMCP) - a clean install with no upper
+    # bound resolves 2.x and fails immediately on import.
     "mcp[cli]>=1.0.0,<2.0.0",
 ]
 

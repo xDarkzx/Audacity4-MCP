@@ -2,9 +2,16 @@
 
 All notable changes to Audacity4MCP will be documented in this file.
 
-No tagged releases yet — this is early alpha under active daily development.
+This is early alpha under active daily development.
 
 ## [Unreleased]
+
+### Fixed: CI Was Broken on First Push
+
+- `ruff check .` ran with ruff's full default rule set (import sorting, blind-except, pylint-style refactor suggestions) instead of the project's intended real-bugs-only scope - `pyproject.toml` never actually configured `[tool.ruff.lint]`. Fixed with `select = ["F", "S"]`, matching the identical config already used in the sibling AudacityMCP (v3) and Reaper-MCP projects.
+- `mcp[cli]>=1.0.0` had no upper bound, so a clean install resolved `mcp` 2.x - a real, confirmed breaking release that renamed `mcp.server.fastmcp.FastMCP`, which every tool module here imports. Only worked locally because this machine already had `mcp` 1.26.0 installed from before 2.x existed. Fixed with `<2.0.0`, matching both sibling projects.
+
+## [0.1.0] - 2026-09-05
 
 ### Realtime/VST3 Effects: New Surface, Three Real Bugs Found Along the Way
 
