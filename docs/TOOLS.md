@@ -77,6 +77,22 @@ Not implemented, deliberately: `track_mix_and_render`, `track_stereo_to_mono`, `
 | `edit_join()` | Join selected clips into one. |
 | `edit_undo()` / `edit_redo()` | Undo/redo one step. Fails cleanly if there's nothing to undo/redo. |
 
+### Clip Editing (v4-exclusive, no v3 equivalent)
+
+Per-clip operations addressed by key (from `track_get_info`), not the current selection — v3 never had non-destructive clip-level pitch/speed at all.
+
+| Tool | Description |
+|---|---|
+| `clip_set_pitch(key, semitones)` / `clip_reset_pitch(key)` | Non-destructive pitch shift, no audio processing — pure playback-time transform, reversible. |
+| `clip_set_speed(key, speed)` / `clip_reset_speed(key)` | Non-destructive speed/duration change. **CONFIRMED LIVE: `speed` is a duration multiplier, not a playback-rate multiplier** — `new_duration = original_duration * speed`. `speed=2.0` makes the clip take *twice as long* (slower), `speed=0.5` makes it *half as long* (faster) — the opposite of what "speed" implies elsewhere. |
+| `clip_render_pitch_speed(key)` | Permanently bake pitch/speed changes into the audio. |
+| `clip_reset_pitch_speed(key)` | Revert both pitch and speed in one call. |
+| `clip_split_at_silences(key)` | Auto-split one specific clip at its detected silence boundaries (vs. `edit_disjoin`, which acts on the current selection). |
+| `split_range_at_silences(start, end)` | Auto-split every clip on the selected track(s) within a time range. |
+| `clip_trim(key, side, delta_sec, min_clip_duration=0)` / `clip_stretch(key, side, delta_sec, min_clip_duration=0)` | Trim (discard) or stretch (reveal/time-stretch) a clip edge. **CONFIRMED LIVE: for both, and for both `side` values, positive `delta_sec` shrinks the clip inward; negative grows it outward** — despite "stretch" suggesting the opposite. To restore 1s trimmed off the right edge: `clip_stretch(key, "right", -1.0)`, not `+1.0`. |
+| `nearest_zero_crossing(time)` | Nearest zero-crossing to an arbitrary timestamp, independent of the current selection (unlike `select_zero_crossing`). |
+| `clip_set_color(key, color_index)` / `track_set_color(color_index)` (track_tools) | Color tag for visual organization, 0 (inherit) to 9. |
+
 ## Effects
 
 Destructive, permanently-applied effects — use [Realtime/VST3 Effects](#realtimevst3-effects) instead if the user wants something adjustable/tweakable rather than baked in.

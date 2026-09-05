@@ -120,6 +120,18 @@ def register(mcp: FastMCP):
         """Unmute every track in the project, including any not currently selected."""
         return await bridge.call("track-unmute-all", {})
 
+    @mcp.tool()
+    async def track_set_color(color_index: int) -> dict:
+        """Set the color tag for the currently selected track(s), for visual
+        organization. Select tracks first with select_tracks.
+
+        Args:
+            color_index: 0 (no custom color, inherit default) to 9.
+        """
+        if not 0 <= color_index <= 9:
+            raise ValueError("color_index must be 0-9")
+        return await bridge.call("set-track-color", {"color_index": color_index})
+
     # NOTE: v3 also had track_select, track_mix_and_render(+to_new_track),
     # track_stereo_to_mono, and track_align_end_to_end.
     # - track_select: already covered by selection_tools.select_tracks(track,

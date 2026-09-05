@@ -181,3 +181,22 @@ async def test_track_unmute_all_calls_real_command(monkeypatch):
     await fake_mcp.tools["track_unmute_all"]()
 
     fake_bridge.call.assert_called_once_with("track-unmute-all", {})
+
+
+@pytest.mark.asyncio
+async def test_track_set_color_calls_real_command(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch, {"content": [{"text": "Track color set"}], "isError": False})
+
+    await fake_mcp.tools["track_set_color"](color_index=5)
+
+    fake_bridge.call.assert_called_once_with("set-track-color", {"color_index": 5})
+
+
+@pytest.mark.asyncio
+async def test_track_set_color_rejects_out_of_range(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+
+    with pytest.raises(ValueError, match="0-9"):
+        await fake_mcp.tools["track_set_color"](color_index=10)
+
+    fake_bridge.call.assert_not_called()
