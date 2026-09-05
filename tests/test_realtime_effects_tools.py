@@ -1,3 +1,4 @@
+import json
 import pytest
 from unittest.mock import AsyncMock
 import server4.tools.realtime_effects_tools as realtime_effects_tools
@@ -21,6 +22,114 @@ def _fake_mcp_with(monkeypatch, result):
     fake_mcp = _FakeMCP()
     realtime_effects_tools.register(fake_mcp)
     return fake_mcp, fake_bridge
+
+
+def _effects_response(effects: list[dict]) -> dict:
+    return {"content": [{"text": json.dumps({"effects": effects, "returnedCount": len(effects), "totalMatched": len(effects)})}], "isError": False}
+
+
+@pytest.mark.asyncio
+async def test_suggest_and_add_effect_picks_preferred_vendor_reverb(monkeypatch):
+    effects = [
+        {"title": "Some Reverb Plugin", "id": "id-generic-reverb", "family": "VST3", "category": "None", "vendor": "RandomCo", "isRealtimeCapable": True},
+        {"title": "ValhallaVintageVerb", "id": "id-valhalla", "family": "VST3", "category": "None", "vendor": "Valhalla DSP, LLC", "isRealtimeCapable": True},
+        {"title": "Compressor", "id": "id-compressor", "family": "Builtin", "category": "Volume and compression", "vendor": "Audacity", "isRealtimeCapable": True},
+    ]
+    fake_bridge = AsyncMock()
+    fake_bridge.call.side_effect = [
+        _effects_response(effects),
+        {"content": [{"text": "Added realtime effect ValhallaVintageVerb"}], "isError": False},
+    ]
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    realtime_effects_tools.register(fake_mcp)
+
+    result = await fake_mcp.tools["suggest_and_add_effect"](track_id=0, category="reverb")
+
+    assert result["chosen"]["id"] == "id-valhalla"
+    assert result["chosen"]["title"] == "ValhallaVintageVerb"
+    assert {"title": "Some Reverb Plugin", "vendor": "RandomCo"} in result["alternatives"]
+    calls = fake_bridge.call.call_args_list
+    assert calls[1].args == ("add-realtime-effect", {"track_id": 0, "effect_id": "id-valhalla"})
+
+
+@pytest.mark.asyncio
+async def test_suggest_and_add_effect_excludes_non_realtime_capable(monkeypatch):
+    effects = [
+        {"title": "Destructive-Only Reverb", "id": "id-destructive", "family": "VST3", "category": "None", "vendor": "SomeVendor", "isRealtimeCapable": False},
+        {"title": "OK Reverb", "id": "id-ok", "family": "VST3", "category": "None", "vendor": "SomeVendor", "isRealtimeCapable": True},
+    ]
+    fake_bridge = AsyncMock()
+    fake_bridge.call.side_effect = [
+        _effects_response(effects),
+        {"content": [], "isError": False},
+    ]
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    realtime_effects_tools.register(fake_mcp)
+
+    result = await fake_mcp.tools["suggest_and_add_effect"](track_id=0, category="reverb")
+
+    assert result["chosen"]["id"] == "id-ok"
+
+
+@pytest.mark.asyncio
+async def test_suggest_and_add_effect_rejects_unknown_category(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+
+    with pytest.raises(ValueError, match="category must be one of"):
+        await fake_mcp.tools["suggest_and_add_effect"](track_id=0, category="not-a-real-category")
+
+    fake_bridge.call.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_suggest_and_add_effect_rejects_when_nothing_matches(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch, _effects_response([
+        {"title": "Amplify", "id": "id-amp", "family": "Builtin", "category": "Volume and compression", "vendor": "Audacity", "isRealtimeCapable": True},
+    ]))
+
+    with pytest.raises(ValueError, match="No installed"):
+        await fake_mcp.tools["suggest_and_add_effect"](track_id=0, category="chorus")
+
+
+@pytest.mark.asyncio
+async def test_suggest_and_add_effect_matches_word_prefix_not_bare_substring(monkeypatch):
+    """Regression test for two real, confirmed-live false-positive classes in
+    the matching logic:
+    - unbounded substring: "hall" inside vendor "Valhalla" (would wrongly match
+      "reverb" against a delay-only plugin), "eq" inside "Freq"
+      (ValhallaFreqEcho wrongly matching "eq")
+    - exact-word (too strict): "compress" must match "Compressor" even though
+      "compress" is only a prefix of that word, not the whole word
+    """
+    effects = [
+        {"title": "ValhallaDelay", "id": "id-delay", "family": "VST3", "category": "None", "vendor": "Valhalla DSP, LLC", "isRealtimeCapable": True},
+        {"title": "Compressor", "id": "id-compressor", "family": "Builtin", "category": "Volume and compression", "vendor": "Audacity", "isRealtimeCapable": True},
+        {"title": "Compose AI Standalone", "id": "id-composeai", "family": "VST3", "category": "None", "vendor": "ComposeAI", "isRealtimeCapable": True},
+    ]
+    fake_bridge = AsyncMock()
+    fake_bridge.call.side_effect = [
+        _effects_response(effects),  # reverb attempt's list-effects call
+        _effects_response(effects),  # compressor attempt's list-effects call
+        {"content": [{"text": "Added realtime effect Compressor"}], "isError": False},
+    ]
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    realtime_effects_tools.register(fake_mcp)
+
+    # "reverb" must NOT match ValhallaDelay (vendor "Valhalla" contains "hall"
+    # as a bare substring, but "hall" is not a word-prefix of "Valhalla")
+    with pytest.raises(ValueError, match="No installed"):
+        await fake_mcp.tools["suggest_and_add_effect"](track_id=0, category="reverb")
+
+    # "compressor" must match Compressor (word-prefix) and must NOT surface
+    # Compose AI Standalone ("comp" is a prefix of both "Compressor" and
+    # "Compose", so "comp" was dropped from the keyword list entirely -
+    # "compress" is a prefix of "Compressor" but not "Compose")
+    result = await fake_mcp.tools["suggest_and_add_effect"](track_id=0, category="compressor")
+    assert result["chosen"]["id"] == "id-compressor"
+    assert all(alt["title"] != "Compose AI Standalone" for alt in result["alternatives"])
 
 
 @pytest.mark.asyncio

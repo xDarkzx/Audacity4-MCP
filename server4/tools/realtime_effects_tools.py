@@ -1,10 +1,132 @@
+import json
+import re
+
 from mcp.server.fastmcp import FastMCP
 
 MASTER_TRACK_ID = -2
 
+# Substring keywords matched against an effect's title+category+vendor
+# (case-insensitive) to classify it into a category - not every plugin
+# reports a useful "category" itself (confirmed live: third-party VST3s all
+# come back with category "None" from Audacity's own discovery), so title
+# text is the only reliable signal across both Builtin and VST3 effects.
+_EFFECT_CATEGORY_KEYWORDS = {
+    "reverb": ["reverb", "verb", "hall", "room", "plate", "space"],
+    "compressor": ["compress", "dynamics"],
+    "eq": ["eq", "equali", "filter curve", "graphic eq", "bass and treble"],
+    "delay": ["delay", "echo"],
+    "limiter": ["limit"],
+    "distortion": ["distort", "satur", "drive", "overdrive"],
+    "gate": ["gate"],
+    "chorus": ["chorus"],
+    "phaser": ["phaser"],
+    "flanger": ["flange"],
+    "deesser": ["de-ess", "deess", "de ess"],
+}
+
+# Soft tiebreak only, not a hard requirement - these are widely-regarded,
+# commonly-owned plugin vendors (Valhalla's reverbs/delays are free and
+# near-ubiquitous; FabFilter is an industry-standard for EQ/dynamics).
+# "Audacity" ranks alongside them so a solid stock/builtin effect isn't
+# skipped over a third-party plugin just for being third-party. Whatever
+# vendor isn't in this list still gets picked when it's the only match.
+_PREFERRED_VENDORS = ["Valhalla", "FabFilter", "Audacity"]
+
 
 def register(mcp: FastMCP):
     from server4.main import bridge
+
+    @mcp.tool()
+    async def suggest_and_add_effect(track_id: int, category: str) -> dict:
+        """Find a good installed effect for a stated goal and add it as a
+        realtime effect - the "pick the right plugin for me" workflow, so the
+        user doesn't have to know which of their installed VSTs does reverb,
+        compression, EQ, etc. Searches every actually-installed, realtime-
+        capable effect (Builtin and VST3 alike) by matching category keywords
+        against its title/vendor - VST3 plugins don't reliably self-report a
+        usable category (confirmed live: they all come back "None"), so text
+        matching is the only signal that works across formats. "Best" here is
+        a soft preference among real matches (a few well-regarded vendors,
+        see _PREFERRED_VENDORS), not an objective quality ranking - there
+        isn't one. Returns the alternatives too, so the choice isn't a black
+        box the user can't override.
+
+        Args:
+            track_id: Track id, from project_get_info's track list. Use -2
+                for the Master bus.
+            category: One of "reverb", "compressor", "eq", "delay", "limiter",
+                "distortion", "gate", "chorus", "phaser", "flanger", "deesser".
+        """
+        category = category.lower().strip()
+        if category not in _EFFECT_CATEGORY_KEYWORDS:
+            raise ValueError(f"category must be one of: {', '.join(sorted(_EFFECT_CATEGORY_KEYWORDS))}")
+        keywords = _EFFECT_CATEGORY_KEYWORDS[category]
+
+        result = await bridge.call("list-effects", {"limit": 500})
+        data = json.loads(result["content"][-1]["text"])
+        effects = data.get("effects", [])
+
+        def _matches(eff: dict) -> bool:
+            haystack = f"{eff.get('title', '')} {eff.get('category', '')} {eff.get('vendor', '')}"
+            # Plugin titles are frequently camelCase compounds with no word
+            # separator (e.g. "ValhallaVintageVerb") - split at lower->upper
+            # transitions first so each real word can be matched on its own.
+            split_haystack = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", haystack)
+            words = re.findall(r"[A-Za-z][A-Za-z'-]*", split_haystack)
+            for kw in keywords:
+                if " " in kw:
+                    # Multi-word phrase (e.g. "filter curve") - a plain substring
+                    # check is safe here, phrases are long/specific enough not
+                    # to false-match unrelated text the way single short tokens do.
+                    if kw.lower() in split_haystack.lower():
+                        return True
+                else:
+                    # Single-token keyword: match as a PREFIX of a whole word,
+                    # not a bare substring anywhere. This is deliberately
+                    # word-prefix, not exact-word or unbounded substring -
+                    # confirmed live that both extremes are wrong: unbounded
+                    # substring false-matched "hall" inside vendor "Valhalla"
+                    # (picked a delay plugin for "reverb") and "eq" inside
+                    # "Freq" (ValhallaFreqEcho matching "eq"); but exact-word
+                    # matching then failed to match "compress" against
+                    # "Compressor" (a real, correct match - "compress" is a
+                    # genuine prefix, just not the whole word). Word-prefix
+                    # matching is the rule that gets both right.
+                    if any(word.lower().startswith(kw.lower()) for word in words):
+                        return True
+            return False
+
+        candidates = [eff for eff in effects if eff.get("isRealtimeCapable") and _matches(eff)]
+
+        if not candidates:
+            raise ValueError(
+                f"No installed, realtime-capable effect matched category {category!r}. "
+                "Use list_effects yourself to see what's actually installed."
+            )
+
+        def _rank(eff):
+            vendor = eff.get("vendor", "")
+            preferred_index = next(
+                (i for i, v in enumerate(_PREFERRED_VENDORS) if v.lower() in vendor.lower()),
+                len(_PREFERRED_VENDORS),
+            )
+            return (preferred_index, eff.get("title", ""))
+
+        candidates.sort(key=_rank)
+        chosen = candidates[0]
+
+        add_result = await bridge.call("add-realtime-effect", {"track_id": track_id, "effect_id": chosen["id"]})
+
+        return {
+            "chosen": {
+                "title": chosen["title"], "id": chosen["id"],
+                "vendor": chosen.get("vendor", ""), "family": chosen.get("family", ""),
+            },
+            "alternatives": [
+                {"title": c["title"], "vendor": c.get("vendor", "")} for c in candidates[1:6]
+            ],
+            "add_result": add_result,
+        }
 
     @mcp.tool()
     async def add_realtime_effect(track_id: int, effect_id: str) -> dict:
