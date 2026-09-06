@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+from pathlib import Path
 from typing import Any
 
 
@@ -18,13 +20,68 @@ class BridgeClient:
     # single-effect parameter dump.
     MAX_LINE_BYTES = 16 * 1024 * 1024
 
+    # Audacity writes this on first run, in the user's own profile directory.
+    # Reading it from the same well-known place is what keeps setup at zero: no
+    # environment variables, no config file to edit, no key to copy. A web page
+    # cannot read local files, and another user cannot read this directory, so
+    # neither can obtain the token.
+    TOKEN_FILENAME = "mcp_token"  # noqa: S105 - a file name, not a credential
+
     def __init__(self, host: str = "127.0.0.1", port: int = 2212):
         self._host = host
         self._port = port
+        self._token: str | None = None
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._id = 0
         self._lock = asyncio.Lock()
+
+    @classmethod
+    def _default_token_paths(cls) -> list[Path]:
+        """Where Audacity 4 keeps the token, newest install layouts first."""
+        local = os.environ.get("LOCALAPPDATA")
+        roots: list[Path] = []
+        if local:
+            roots += [
+                Path(local) / "Audacity" / "Audacity4Development",
+                Path(local) / "Audacity" / "Audacity4",
+            ]
+        # macOS / Linux equivalents
+        home = Path.home()
+        roots += [
+            home / "Library" / "Application Support" / "Audacity" / "Audacity4Development",
+            home / ".local" / "share" / "Audacity" / "Audacity4Development",
+        ]
+        return [r / cls.TOKEN_FILENAME for r in roots]
+
+    def _resolve_token(self) -> str:
+        """Reads the shared token. AUDACITY4_MCP_TOKEN overrides the file, for
+        setups where Audacity's profile directory isn't reachable (containers,
+        remote bridges)."""
+        if self._token:
+            return self._token
+
+        env = os.environ.get("AUDACITY4_MCP_TOKEN", "").strip()
+        if env:
+            self._token = env
+            return env
+
+        for path in self._default_token_paths():
+            try:
+                token = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if token:
+                self._token = token
+                return token
+
+        looked = ", ".join(str(p) for p in self._default_token_paths())
+        raise RuntimeError(
+            "Could not read Audacity's MCP token. Audacity 4 writes it on first "
+            "run, so this usually means Audacity has not been started yet, or was "
+            "installed somewhere unexpected. Looked in: " + looked
+            + ". Set AUDACITY4_MCP_TOKEN to point at it directly if needed."
+        )
 
     async def connect(self) -> None:
         if self._writer is None or self._writer.is_closing():
@@ -51,6 +108,7 @@ class BridgeClient:
                 "jsonrpc": "2.0",
                 "id": call_id,
                 "method": "tools/call",
+                "token": self._resolve_token(),
                 "params": {"name": f"mcp_{command_name}", "arguments": arguments},
             }
             self._writer.write((json.dumps(msg) + "\n").encode())
@@ -98,6 +156,23 @@ class BridgeClient:
             except (json.JSONDecodeError, ConnectionError) as e:
                 await self.close()
                 raise RuntimeError(f"Transport error waiting for response to {command_name}: {e}") from e
+
+            # A JSON-RPC protocol error carries no "result" at all, so checking
+            # only result.isError silently turned an unauthorized/unknown-method
+            # reply into an empty success. Confirmed live: a deliberately wrong
+            # token came back as {} rather than raising.
+            if "error" in resp:
+                err = resp.get("error") or {}
+                message = err.get("message") or "unknown error"
+                code = err.get("code")
+                if code == -32001:
+                    raise RuntimeError(
+                        f"Audacity rejected the connection as unauthorized while calling "
+                        f"'{command_name}'. The MCP token did not match the one Audacity "
+                        f"wrote to its profile directory - restart Audacity, or unset "
+                        f"AUDACITY4_MCP_TOKEN if it is pointing at a stale value."
+                    )
+                raise RuntimeError(f"Audacity returned an error for '{command_name}': {message} (code {code})")
 
             result = resp.get("result", {})
             if result.get("isError"):

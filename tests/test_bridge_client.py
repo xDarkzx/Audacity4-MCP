@@ -158,3 +158,64 @@ async def test_call_times_out_with_actionable_dialog_message():
     assert client._writer is None
 
     await fake.stop()
+
+
+def test_token_prefers_env_var(monkeypatch):
+    monkeypatch.setenv("AUDACITY4_MCP_TOKEN", "env-token-value")
+    assert BridgeClient()._resolve_token() == "env-token-value"
+
+
+def test_token_read_from_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("AUDACITY4_MCP_TOKEN", raising=False)
+    token_file = tmp_path / "mcp_token"
+    token_file.write_text("abc123def456", encoding="utf-8")
+    monkeypatch.setattr(BridgeClient, "_default_token_paths", classmethod(lambda cls: [token_file]))
+    assert BridgeClient()._resolve_token() == "abc123def456"
+
+
+def test_token_missing_raises_actionable_error(monkeypatch, tmp_path):
+    monkeypatch.delenv("AUDACITY4_MCP_TOKEN", raising=False)
+    monkeypatch.setattr(BridgeClient, "_default_token_paths",
+                        classmethod(lambda cls: [tmp_path / "does_not_exist"]))
+    with pytest.raises(RuntimeError, match="has not been started"):
+        BridgeClient()._resolve_token()
+
+
+@pytest.mark.asyncio
+async def test_call_sends_the_token(monkeypatch):
+    monkeypatch.setenv("AUDACITY4_MCP_TOKEN", "tok-42")
+    server = _FakeServer({"jsonrpc": "2.0", "id": 1, "result": {"isError": False, "content": []}})
+    port = await server.start()
+    client = BridgeClient(port=port)
+    await client.call("project-get-info", {})
+    await client.close()
+    await server.stop()
+    assert server.received["token"] == "tok-42"  # noqa: S105 - test fixture value
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_error_is_raised_not_swallowed(monkeypatch):
+    """A protocol-level error carries no "result", so checking only
+    result.isError used to return {} as though the call had succeeded."""
+    monkeypatch.setenv("AUDACITY4_MCP_TOKEN", "t")
+    server = _FakeServer({"jsonrpc": "2.0", "id": 1,
+                          "error": {"code": -32601, "message": "Method not found"}})
+    port = await server.start()
+    client = BridgeClient(port=port)
+    with pytest.raises(RuntimeError, match="Method not found"):
+        await client.call("bogus-command", {})
+    await client.close()
+    await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_error_explains_the_token(monkeypatch):
+    monkeypatch.setenv("AUDACITY4_MCP_TOKEN", "t")
+    server = _FakeServer({"jsonrpc": "2.0", "id": 1,
+                          "error": {"code": -32001, "message": "Unauthorized"}})
+    port = await server.start()
+    client = BridgeClient(port=port)
+    with pytest.raises(RuntimeError, match="unauthorized"):
+        await client.call("project-get-info", {})
+    await client.close()
+    await server.stop()
