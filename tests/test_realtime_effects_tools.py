@@ -303,3 +303,38 @@ async def test_apply_effect_preset_rejects_empty_preset_id(monkeypatch):
         await fake_mcp.tools["apply_effect_preset"](track_id=0, index=0, preset_id="")
 
     fake_bridge.call.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_set_effect_parameters_encodes_pairs(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+    await fake_mcp.tools["set_effect_parameters"](0, 1, {"0": 1, "2": 4.906891, "3": -1.5})
+    name, args = fake_bridge.call.call_args[0]
+    assert name == "set-effect-parameters"
+    assert args["track_id"] == 0 and args["index"] == 1
+    pairs = dict(p.split("=", 1) for p in args["parameters"].split(";"))
+    assert set(pairs) == {"0", "2", "3"}
+    assert float(pairs["2"]) == pytest.approx(4.906891)
+    assert float(pairs["3"]) == pytest.approx(-1.5)
+
+
+@pytest.mark.asyncio
+async def test_set_effect_parameters_rejects_empty(monkeypatch):
+    fake_mcp, _ = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+    with pytest.raises(ValueError):
+        await fake_mcp.tools["set_effect_parameters"](0, 0, {})
+
+
+@pytest.mark.asyncio
+async def test_set_effect_parameters_rejects_negative_index(monkeypatch):
+    fake_mcp, _ = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+    with pytest.raises(ValueError, match="index"):
+        await fake_mcp.tools["set_effect_parameters"](0, -1, {"0": 1})
+
+
+@pytest.mark.asyncio
+async def test_set_effect_parameters_rejects_non_finite(monkeypatch):
+    fake_mcp, _ = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="finite"):
+            await fake_mcp.tools["set_effect_parameters"](0, 0, {"0": bad})

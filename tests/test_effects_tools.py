@@ -330,3 +330,55 @@ async def test_effect_sliding_stretch_is_disabled(monkeypatch):
         await fake_mcp.tools["effect_sliding_stretch"](rate_change_start=10.0)
 
     fake_bridge.call.assert_not_called()
+
+
+def _apply_effects_mcp(monkeypatch):
+    fake_bridge = AsyncMock()
+    fake_bridge.call.return_value = {"content": [], "isError": False}
+    monkeypatch.setattr("server4.main.bridge", fake_bridge)
+    fake_mcp = _FakeMCP()
+    effects_tools.register(fake_mcp)
+    return fake_mcp, fake_bridge
+
+
+@pytest.mark.asyncio
+async def test_apply_effects_encodes_pipe_separated_lists(monkeypatch):
+    fake_mcp, fake_bridge = _apply_effects_mcp(monkeypatch)
+    await fake_mcp.tools["apply_effects"]([
+        {"effect_id": "Normalize", "params": "PeakLevel=-1.0 RemoveDcOffset=1"},
+        {"effect_id": "Compressor", "params": "Threshold=-12 Ratio=4"},
+        {"effect_id": "Click removal"},
+    ])
+    name, args = fake_bridge.call.call_args[0]
+    assert name == "apply-effects"
+    assert args["effect_ids"] == "Normalize|Compressor|Click removal"
+    assert args["params_list"] == "PeakLevel=-1.0 RemoveDcOffset=1|Threshold=-12 Ratio=4|"
+    assert args["select_all"] is True
+
+
+@pytest.mark.asyncio
+async def test_apply_effects_rejects_empty_list(monkeypatch):
+    fake_mcp, _ = _apply_effects_mcp(monkeypatch)
+    with pytest.raises(ValueError):
+        await fake_mcp.tools["apply_effects"]([])
+
+
+@pytest.mark.asyncio
+async def test_apply_effects_rejects_missing_effect_id(monkeypatch):
+    fake_mcp, _ = _apply_effects_mcp(monkeypatch)
+    with pytest.raises(ValueError, match="effect_id"):
+        await fake_mcp.tools["apply_effects"]([{"params": "X=1"}])
+
+
+@pytest.mark.asyncio
+async def test_apply_effects_rejects_pipe_in_values(monkeypatch):
+    fake_mcp, _ = _apply_effects_mcp(monkeypatch)
+    with pytest.raises(ValueError):
+        await fake_mcp.tools["apply_effects"]([{"effect_id": "A|B"}])
+
+
+@pytest.mark.asyncio
+async def test_apply_effects_honours_select_all_false(monkeypatch):
+    fake_mcp, fake_bridge = _apply_effects_mcp(monkeypatch)
+    await fake_mcp.tools["apply_effects"]([{"effect_id": "Normalize"}], select_all=False)
+    assert fake_bridge.call.call_args[0][1]["select_all"] is False

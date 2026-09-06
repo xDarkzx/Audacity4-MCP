@@ -40,6 +40,48 @@ def register(mcp: FastMCP):
     from server4.main import bridge
 
     @mcp.tool()
+    async def apply_effects(effects: list[dict], select_all: bool = True) -> dict:
+        """Apply a sequence of destructive effects in one call.
+
+        Prefer this over repeated single-effect calls for a cleanup or mastering
+        chain: the selection is made once rather than before every effect, and
+        processing stops at the first failure so the audio is never left in a
+        state you cannot reason about - the result names exactly which effects
+        were applied, so you know how many times to undo.
+
+        Note each effect is still its own undo step; this batches the calls, not
+        the undo history.
+
+        Args:
+            effects: Ordered list of {"effect_id": str, "params": str (optional)}.
+                effect_id is a title ("Normalize") or a real PluginID; params is
+                Audacity's "Key=Value Key=Value" automation string.
+            select_all: Select all audio before applying (default True). Pass
+                False to apply to the existing selection.
+        """
+        if not effects:
+            raise ValueError("effects must not be empty")
+        ids, params = [], []
+        for i, eff in enumerate(effects):
+            effect_id = str(eff.get("effect_id", "")).strip()
+            if not effect_id:
+                raise ValueError(f"effects[{i}] is missing 'effect_id'")
+            param_str = str(eff.get("params", "") or "")
+            # '|' separates the entries on the wire, so it cannot appear within one.
+            if "|" in effect_id or "|" in param_str:
+                raise ValueError(f"effects[{i}] must not contain '|'")
+            ids.append(effect_id)
+            params.append(param_str)
+        return await bridge.call(
+            "apply-effects",
+            {
+                "effect_ids": "|".join(ids),
+                "params_list": "|".join(params),
+                "select_all": select_all,
+            },
+        )
+
+    @mcp.tool()
     async def list_effects(
         category: str = "",
         family: str = "",

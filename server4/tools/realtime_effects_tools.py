@@ -1,4 +1,5 @@
 import json
+import math
 import re
 
 from mcp.server.fastmcp import FastMCP
@@ -231,6 +232,41 @@ def register(mcp: FastMCP):
         return await bridge.call(
             "set-effect-parameter",
             {"track_id": track_id, "index": index, "parameter_id": parameter_id, "value": value},
+        )
+
+    @mcp.tool()
+    async def set_effect_parameters(track_id: int, index: int, parameters: dict[str, float]) -> dict:
+        """Set several parameters on one realtime effect in a single commit.
+
+        Prefer this over repeated set_effect_parameter calls whenever more than
+        one value is involved. The whole batch is written before anything is
+        flushed, so the plugin is never left in a half-configured state that can
+        be heard while it is processing - an EQ band enabled before its frequency
+        has been set, for instance - and it produces one settings commit instead
+        of one per value.
+
+        Args:
+            track_id: Track id, from project_get_info's track list. Use -2
+                for the Master bus.
+            index: Position in the chain, from list_realtime_effects.
+            parameters: {parameter_id: value}, ids from list_effect_parameters'
+                "id" field. Values use the same scale as set_effect_parameter
+                (for VST3 that is typically normalized 0-1, not display units).
+                Nothing is written if any entry is invalid.
+        """
+        if index < 0:
+            raise ValueError("index must be >= 0")
+        if not parameters:
+            raise ValueError("parameters must not be empty")
+        for pid, value in parameters.items():
+            if not str(pid):
+                raise ValueError("parameter ids must not be empty")
+            if not math.isfinite(float(value)):
+                raise ValueError(f"value for parameter {pid!r} must be a finite number")
+        encoded = ";".join(f"{pid}={float(value)!r}" for pid, value in parameters.items())
+        return await bridge.call(
+            "set-effect-parameters",
+            {"track_id": track_id, "index": index, "parameters": encoded},
         )
 
     @mcp.tool()
