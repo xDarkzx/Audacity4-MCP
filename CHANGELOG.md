@@ -6,6 +6,18 @@ This is early alpha under active daily development.
 
 ## [Unreleased]
 
+### Fixed in the Fork: VST3 Parameter Writes Were Lost While a Plugin's Editor Was Open
+
+The oldest known limitation in this project, and it was never what it looked like. Setting a VST3 parameter reported success with the right value and then silently reverted. It was recorded first as affecting only discrete/list parameters (Pro-Q 3's per-band Shape), then as affecting continuous ones too, then as an Audacity-wide bug worth reporting upstream. It is none of those: it is an automation problem, and a human dragging a slider never hits it.
+
+`ComponentHandler::mParametersCache` belongs to the plugin *wrapper*, not to any one `EffectSettings`, and it is drained by whichever `FetchSettings()` reaches it first. `EffectParametersProvider::setParameterValue` reads the parameter back and emits `parameterChanged` the moment a write returns — the read reaches `FetchSettings` directly, the notification reaches it through an open editor's `settingsToView()`. `FetchSettings` then began with an unconditional `ResetCache()`, so the pending edit was destroyed before anything could flush it, and the store that followed wrote stale state over the top. With the editor closed nothing subscribes, which is exactly why it only ever failed with the plugin's own window open.
+
+Fixed with two changes, both required: `FetchSettings` now flushes pending edits into the settings before resetting the cache, and `setParameterValue` commits each edit into its own settings object immediately rather than leaving it in the shared cache until the gesture ends. Preserving the edit alone is not enough — it otherwise lands in the editor's settings object while a different one is stored.
+
+Verified with the editor open, every value read back independently afterwards. FabFilter Pro-Q 3: fifteen parameters in one call — four bands of frequency, gain and shape — all correct, **including the Shape dropdowns this project had recorded as impossible to set**. ValhallaVintageVerb, a second vendor, in the same chain: Mix 20%, PreDelay 10.00 ms, Decay 6.00 s. No writes lost in any run.
+
+Known follow-up: committing per edit means a batched set is no longer a single settings commit, so a chain can be heard passing through intermediate states while processing. The per-value read-back and notification is what forces this, and that is where it should be addressed.
+
 ### Fixed in the Fork: VST3 Plugin Meters and Analysers Were Frozen
 
 Every VST3 plugin whose editor draws live data — FabFilter's Pro-L2 loudness meter and Pro-Q 3's spectrum analyser, TBProAudio's dpMeter5 and mvMeter2 — showed a single stuck frame in Audacity 4 (and in 3, for the same reason). It looked like a plugin problem. It was the host.
@@ -97,7 +109,7 @@ Originally composed `select-time` + `play-stop` (a toggle). Live testing proved 
 
 ### Known Limitation, Not Fixed Here: VST3 Discrete/List Parameters Don't Persist
 
-> **Superseded — this entry was wrong on its central claim.** A later live session against Pro-Q 3's per-band controls showed continuous parameters revert too, and the trigger is the plugin's editor being **open**, not the parameter's type. The bug is also known upstream as [audacity/audacity#11892](https://github.com/audacity/audacity/issues/11892). Left here as written for history; see the README's Known Gaps for what is actually true.
+> **Superseded, and since fixed.** This entry was wrong on its central claim: continuous parameters revert too, and the trigger is the plugin's editor being **open**, not the parameter's type. `FlushParameters` was not the mechanism either. See "VST3 Parameter Writes Were Lost While a Plugin's Editor Was Open" above for the real cause and the fix. Left here as written for history.
 
 Continuous VST3 parameters (frequency, gain, Q, threshold, ratio, attack/release, mix) work correctly through `set_effect_parameter` — verified via independent re-reads. Discrete/list-type parameters (e.g. FabFilter Pro-Q 3's per-band "Shape" selector) do not, even with correct value encoding (raw index and normalized fraction both tested). Root-caused to `VST3Wrapper::FlushParameters` — Audacity's own documented workaround for "plugins that read parameter values directly from the DSP model" — being a no-op for any realtime effect instance, since those stay `mActive == true` for their entire life (confirmed with actual audio playback running during the test, ruling out a "just needs a process() call" explanation). The fix, if pursued, lives in Audacity 4's own VST3 host code, not this server. See [README's Known Gaps](README.md#known-gaps).
 
