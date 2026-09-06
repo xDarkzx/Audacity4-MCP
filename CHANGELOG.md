@@ -6,6 +6,20 @@ This is early alpha under active daily development.
 
 ## [Unreleased]
 
+### Fixed in the Fork: VST3 Plugin Meters and Analysers Were Frozen
+
+Every VST3 plugin whose editor draws live data — FabFilter's Pro-L2 loudness meter and Pro-Q 3's spectrum analyser, TBProAudio's dpMeter5 and mvMeter2 — showed a single stuck frame in Audacity 4 (and in 3, for the same reason). It looked like a plugin problem. It was the host.
+
+VST3 plugins send live data from the audio thread to their editor over `IConnectionPoint`, and the controller may only be touched on the UI thread. Audacity's `ConnectionProxy` handled that by checking the calling thread and, when it was not its own, **silently dropping the message**. Measured on a real playing track: 34 messages delivered, 4305 dropped. The one frame that did arrive was the one sent during editor open, from the UI thread — which is exactly the "grabs one frame then freezes" symptom.
+
+Fixed by queuing off-thread messages in a fixed-size, lock-free-on-the-audio-side ring and delivering them from the UI thread at 60fps. The same measurement afterwards: 6585 delivered, 4 dropped. This is not MCP-specific — it affects anyone using metering plugins in Audacity — so it has gone upstream as [audacity/audacity#11992](https://github.com/audacity/audacity/pull/11992), against issue [#8881](https://github.com/audacity/audacity/issues/8881). The file had had no functional change since July 2022.
+
+### Fixed in the Fork: VST3 Parameter Display Strings Were Nonsense Outside 0–1
+
+`getParameterValueString()` passed a full-range value straight to `getParamStringByValue()`, which the VST3 spec defines as taking a *normalized* value — so a Hz-scale number came back formatted as an astronomically large figure, or as "50.0%". `setParameterValue()` immediately above it already converted for exactly this reason, and the LV2 and Nyquist implementations of the same interface treat the value as full range too. Now normalized before the call.
+
+This is why `currentValueString` was worth distrusting on VST3 plugins. It is now meaningful — but re-reading a parameter after the fact is still the right habit, for the separate reason below.
+
 ### Security: the Bridge Is Authenticated, and a Web Page Could Previously Drive Audacity
 
 The README used to state that the bridge was "not reachable from browser JS ... so no DNS-rebinding vector". That was **wrong**, and testing it proved so: a browser cannot speak this line-delimited protocol, but it can `fetch()` an HTTP POST to `127.0.0.1:2212` with `Content-Type: text/plain` (no CORS preflight), and once the header lines were skipped as unparseable the request **body** was just another line — which executed. CORS blocking the page from reading the reply is irrelevant once the command has already run. Verified end to end, then fixed two independent ways: connections whose first line is an HTTP request line are dropped, and every request now needs a token.
@@ -82,6 +96,8 @@ Confirming this actually worked against a real VST3 (Valhalla VintageVerb, then 
 Originally composed `select-time` + `play-stop` (a toggle). Live testing proved `play-stop` just resumes wherever playback last was, ignoring the just-set selection entirely. Root cause: `play-stop` and "play this specific selection" are genuinely different actions in Audacity 4 (`PlaybackController::playSelectionAction()`, `action://playback/play-selection`). Added the missing `play-selection` command and switched the tool to use it — verified live (a 60s-offset region reported `playPosition: 62.08` after ~2s of playback, matching offset + elapsed correctly).
 
 ### Known Limitation, Not Fixed Here: VST3 Discrete/List Parameters Don't Persist
+
+> **Superseded — this entry was wrong on its central claim.** A later live session against Pro-Q 3's per-band controls showed continuous parameters revert too, and the trigger is the plugin's editor being **open**, not the parameter's type. The bug is also known upstream as [audacity/audacity#11892](https://github.com/audacity/audacity/issues/11892). Left here as written for history; see the README's Known Gaps for what is actually true.
 
 Continuous VST3 parameters (frequency, gain, Q, threshold, ratio, attack/release, mix) work correctly through `set_effect_parameter` — verified via independent re-reads. Discrete/list-type parameters (e.g. FabFilter Pro-Q 3's per-band "Shape" selector) do not, even with correct value encoding (raw index and normalized fraction both tested). Root-caused to `VST3Wrapper::FlushParameters` — Audacity's own documented workaround for "plugins that read parameter values directly from the DSP model" — being a no-op for any realtime effect instance, since those stay `mActive == true` for their entire life (confirmed with actual audio playback running during the test, ruling out a "just needs a process() call" explanation). The fix, if pursued, lives in Audacity 4's own VST3 host code, not this server. See [README's Known Gaps](README.md#known-gaps).
 
