@@ -155,11 +155,23 @@ def register(mcp: FastMCP):
     from server4.main import bridge
 
     @mcp.tool()
-    async def auto_analyze_audio() -> dict:
+    async def auto_analyze_audio(content_type: str = "auto") -> dict:
         """Analyze the current project's audio and recommend a cleanup pipeline.
         Selects all audio first, exports it to a temp WAV, measures it, and returns
         peak/noise/clipping/click/silence-gap/dynamic-range diagnostics plus a
         recommendation for which pipeline to run next.
+
+        Args:
+            content_type: "speech", "music", or "auto" (default). The noise-floor,
+                SNR and click tests are only meaningful for speech, where the
+                quietest passage is genuine room tone. In continuous music the
+                quietest passage is the music itself, so those tests report a high
+                noise floor and poor SNR for practically every mix - and acting on
+                that advice (noise reduction profiled from the opening moments)
+                damages the material. Percussive transients likewise register as
+                clicks. Pass "music" to suppress the speech-only tests, or leave on
+                "auto" to pick from the measurements; the value actually used is
+                returned as "content_type_used".
         """
         await bridge.call("select-all", {})
 
@@ -199,6 +211,22 @@ def register(mcp: FastMCP):
 
         is_clipping = peak_db is not None and peak_db >= -0.1
 
+        # Resolve the content type before interpreting anything. Speech has real
+        # pauses, so it shows silence gaps and a genuinely quiet floor between
+        # phrases; continuous music has neither.
+        resolved_type = (content_type or "auto").strip().lower()
+        if resolved_type not in ("speech", "music", "auto"):
+            resolved_type = "auto"
+        if resolved_type == "auto":
+            snr_est = (peak_db - noise_floor_db) if (peak_db is not None and noise_floor_db is not None) else None
+            looks_like_music = (
+                silence_gap_count == 0
+                and snr_est is not None and snr_est < 25
+                and duration is not None and duration > 20
+            )
+            resolved_type = "music" if looks_like_music else "speech"
+        speech_like = resolved_type == "speech"
+
         issues = []
         if peak_db is not None:
             if peak_db < -30:
@@ -210,7 +238,10 @@ def register(mcp: FastMCP):
             if is_clipping:
                 issues.append(f"CLIPPING: Peak is {peak_db} dB with {clipped_samples} clipped samples.")
 
-        if noise_floor_db is not None and peak_db is not None:
+        # Speech-only: for continuous music the "noise floor" is the music itself,
+        # so these would fire on virtually every mix and recommend noise reduction
+        # that would damage it.
+        if speech_like and noise_floor_db is not None and peak_db is not None:
             snr = peak_db - noise_floor_db
             if snr < 15:
                 issues.append(f"VERY NOISY: SNR is only {round(snr, 1)} dB.")
@@ -222,9 +253,11 @@ def register(mcp: FastMCP):
         if dc_offset is not None and abs(dc_offset) > 0.005:
             issues.append(f"DC OFFSET: {dc_offset} - will be removed by pipeline.")
 
-        if click_count > 50:
+        # Percussive material trips this constantly, so music needs a far higher bar.
+        click_high, click_low = (50, 10) if speech_like else (400, 150)
+        if click_count > click_high:
             issues.append(f"LOTS OF CLICKS/POPS: {click_count} detected.")
-        elif click_count > 10:
+        elif click_count > click_low:
             issues.append(f"SOME CLICKS/POPS: {click_count} detected.")
 
         if silence_gap_count > 0:
@@ -243,12 +276,35 @@ def register(mcp: FastMCP):
             if crest_factor < 3 and peak_db > -6:
                 issues.append(f"OVER-COMPRESSED: Crest factor only {round(crest_factor, 1)} dB.")
 
+        if speech_like:
+            menu = (
+                "\n\nSpeech pipelines:"
+                "\n  - Podcast/voiceover: auto_cleanup_podcast"
+                "\n  - Audiobook (ACX): auto_audiobook_mastering"
+                "\n  - Interview/multi-speaker: auto_cleanup_interview"
+                "\n  - Solo vocal take: auto_cleanup_vocal"
+                "\n  - Live/board recording: auto_cleanup_live"
+                "\n  - Noise/clicks only, levels untouched: auto_cleanup_audio"
+                "\n\nIf this is actually music, re-run with content_type=\"music\"."
+            )
+        else:
+            menu = (
+                "\n\nMusic pipelines:"
+                "\n  - Master (style=\"edm\", \"rock\", \"acoustic\", \"hiphop\", \"jazz\", \"classical\"):"
+                " auto_master_music"
+                "\n  - Lo-fi character: auto_lofi_effect"
+                "\n  - Noise/clicks only, levels untouched: auto_cleanup_audio"
+                "\n\nNoise-floor, SNR and click checks were skipped: they assume the quiet"
+                "\nparts are room tone, which is not true of continuous music. Re-run with"
+                "\ncontent_type=\"speech\" if this is a voice recording."
+            )
+
         if peak_db is not None:
             recommendation = ("ISSUES FOUND:\n" + "\n".join(f"  - {i}" for i in issues)
                                if issues else "Audio looks healthy - no issues detected.")
-            recommendation += "\n\nChoose pipeline based on content type:\n  - Podcast/voiceover: auto_cleanup_podcast\n  - Audiobook (ACX): auto_audiobook_mastering"
+            recommendation += menu
         else:
-            recommendation = "Could not measure audio levels.\n  - Podcast/voiceover: auto_cleanup_podcast\n  - Audiobook (ACX): auto_audiobook_mastering"
+            recommendation = "Could not measure audio levels." + menu
 
         result = {
             "peak_db": peak_db,
@@ -262,6 +318,7 @@ def register(mcp: FastMCP):
             "dynamic_range_db": dynamic_range_db,
             "duration_seconds": duration,
             "issues": issues,
+            "content_type_used": resolved_type,
             "recommendation": recommendation,
         }
         if measurement_error:

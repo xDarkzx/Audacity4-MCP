@@ -143,3 +143,66 @@ async def test_analyze_label_sounds_rejects_bad_label_type(monkeypatch):
         await fake_mcp.tools["analyze_label_sounds"](label_type="not-a-real-type")
 
     fake_bridge.call.assert_not_called()
+
+
+def _analyze_with_measurements(monkeypatch, measurements, **kwargs):
+    """Runs auto_analyze_audio against fixed measurements, bypassing the real export."""
+    import asyncio
+    fake_mcp, _ = _fake_mcp_with(monkeypatch, {"ok": True})
+    monkeypatch.setattr(analysis_tools.os.path, "exists", lambda p: True)
+    monkeypatch.setattr(analysis_tools.os.path, "getsize", lambda p: 1_000_000)
+    monkeypatch.setattr(analysis_tools, "_measure_wav", lambda p: measurements)
+    return asyncio.run(fake_mcp.tools["auto_analyze_audio"](**kwargs))
+
+
+# Measurements taken from a real 50s ambient music mix. Read as speech these look
+# alarming (SNR 14.3 dB, floor -15.7 dB) but the "noise" is the music itself.
+_AMBIENT_MIX = {
+    "peak_db": -1.4,
+    "noise_floor_db": -15.7,
+    "overall_rms_db": -16.3,
+    "clipped_samples": 0,
+    "dc_offset": -0.000015,
+    "click_count": 44,
+    "silence_gaps": [],
+    "silence_gap_count": 0,
+    "dynamic_range_db": 3.5,
+    "duration": 50.57,
+}
+
+
+def test_continuous_music_is_not_reported_as_noisy(monkeypatch):
+    result = _analyze_with_measurements(monkeypatch, _AMBIENT_MIX)
+    assert result["content_type_used"] == "music"
+    joined = " ".join(result["issues"])
+    assert "NOISY" not in joined
+    assert "HIGH NOISE FLOOR" not in joined
+    assert "CLICKS" not in joined
+    assert "auto_master_music" in result["recommendation"]
+
+
+def test_same_audio_read_as_speech_still_flags_noise(monkeypatch):
+    result = _analyze_with_measurements(monkeypatch, _AMBIENT_MIX, content_type="speech")
+    assert result["content_type_used"] == "speech"
+    joined = " ".join(result["issues"])
+    assert "HIGH NOISE FLOOR" in joined
+    assert "auto_cleanup_podcast" in result["recommendation"]
+
+
+def test_speech_with_pauses_is_detected_as_speech(monkeypatch):
+    speech = dict(_AMBIENT_MIX)
+    speech.update({"silence_gaps": [(1.0, 0.8)], "silence_gap_count": 1})
+    result = _analyze_with_measurements(monkeypatch, speech)
+    assert result["content_type_used"] == "speech"
+
+
+def test_music_recommendation_lists_every_music_pipeline(monkeypatch):
+    rec = _analyze_with_measurements(monkeypatch, _AMBIENT_MIX)["recommendation"]
+    for tool in ("auto_master_music", "auto_lofi_effect", "auto_cleanup_audio"):
+        assert tool in rec
+
+
+def test_speech_recommendation_lists_pipelines_that_were_previously_hidden(monkeypatch):
+    rec = _analyze_with_measurements(monkeypatch, _AMBIENT_MIX, content_type="speech")["recommendation"]
+    for tool in ("auto_cleanup_interview", "auto_cleanup_vocal", "auto_cleanup_live"):
+        assert tool in rec
