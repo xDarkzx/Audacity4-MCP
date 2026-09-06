@@ -338,3 +338,51 @@ async def test_set_effect_parameters_rejects_non_finite(monkeypatch):
     for bad in (float("nan"), float("inf"), float("-inf")):
         with pytest.raises(ValueError, match="finite"):
             await fake_mcp.tools["set_effect_parameters"](0, 0, {"0": bad})
+
+
+@pytest.mark.asyncio
+async def test_add_realtime_effects_encodes_chain_and_params(monkeypatch):
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+    await fake_mcp.tools["add_realtime_effects"](0, [
+        {"effect_id": "EQ_ID", "parameters": {"0": 1, "2": 4.9}},
+        {"effect_id": "COMP_ID"},
+        {"effect_id": "LIM_ID", "parameters": {"18": -1.0}},
+    ])
+    name, args = fake_bridge.call.call_args[0]
+    assert name == "add-realtime-effects"
+    assert args["track_id"] == 0
+    assert args["effect_ids"] == "EQ_ID|COMP_ID|LIM_ID"
+    sets = args["parameters_list"].split("|")
+    assert len(sets) == 3
+    assert sets[1] == ""          # no parameters for the compressor
+    assert sets[0].startswith("0=")
+    assert "2=" in sets[0]
+    assert sets[2].startswith("18=")
+
+
+@pytest.mark.asyncio
+async def test_add_realtime_effects_rejects_empty(monkeypatch):
+    fake_mcp, _ = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+    with pytest.raises(ValueError):
+        await fake_mcp.tools["add_realtime_effects"](0, [])
+
+
+@pytest.mark.asyncio
+async def test_add_realtime_effects_rejects_missing_effect_id(monkeypatch):
+    fake_mcp, _ = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+    with pytest.raises(ValueError, match="effect_id"):
+        await fake_mcp.tools["add_realtime_effects"](0, [{"parameters": {"0": 1}}])
+
+
+@pytest.mark.asyncio
+async def test_add_realtime_effects_rejects_non_finite_parameter(monkeypatch):
+    fake_mcp, _ = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+    with pytest.raises(ValueError, match="finite"):
+        await fake_mcp.tools["add_realtime_effects"](0, [{"effect_id": "X", "parameters": {"0": float("inf")}}])
+
+
+@pytest.mark.asyncio
+async def test_add_realtime_effects_rejects_separator_in_id(monkeypatch):
+    fake_mcp, _ = _fake_mcp_with(monkeypatch, {"content": [], "isError": False})
+    with pytest.raises(ValueError):
+        await fake_mcp.tools["add_realtime_effects"](0, [{"effect_id": "A|B"}])

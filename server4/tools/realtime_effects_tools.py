@@ -148,6 +148,61 @@ def register(mcp: FastMCP):
         return await bridge.call("add-realtime-effect", {"track_id": track_id, "effect_id": effect_id})
 
     @mcp.tool()
+    async def add_realtime_effects(track_id: int, effects: list[dict]) -> dict:
+        """Build a realtime effect chain in one call, each effect configured as
+        it is added.
+
+        Prefer this over repeated add_realtime_effect calls when setting up a
+        chain (an EQ into a compressor into a limiter, say). The effects arrive
+        already set up, so nothing needs adjusting afterwards, and each effect's
+        parameters land in a single commit.
+
+        This is also the reliable way to configure a plugin: parameters are
+        applied while the effect is freshly added and its editor cannot be open
+        yet. A write made while a plugin's own editor is open gets pushed back
+        to the stored settings, so "add, then open the GUI" works while "open the
+        GUI, then write" does not.
+
+        Args:
+            track_id: Track id, from project_get_info's track list. Use -2
+                for the Master bus.
+            effects: Ordered list of {"effect_id": str, "parameters": dict}.
+                effect_id is the real PluginID from list_effects' "id" field
+                (NOT the title). parameters is an optional {parameter_id: value}
+                map, ids from list_effect_parameters.
+        """
+        if not effects:
+            raise ValueError("effects must not be empty")
+
+        ids, param_sets = [], []
+        for i, eff in enumerate(effects):
+            effect_id = str(eff.get("effect_id", "")).strip()
+            if not effect_id:
+                raise ValueError(f"effects[{i}] is missing 'effect_id'")
+            if "|" in effect_id:
+                raise ValueError(f"effects[{i}] effect_id must not contain '|'")
+            ids.append(effect_id)
+
+            params = eff.get("parameters") or {}
+            encoded = []
+            for pid, value in params.items():
+                if not str(pid) or "|" in str(pid) or ";" in str(pid):
+                    raise ValueError(f"effects[{i}] has an invalid parameter id {pid!r}")
+                if not math.isfinite(float(value)):
+                    raise ValueError(f"effects[{i}] parameter {pid!r} must be a finite number")
+                encoded.append(f"{pid}={float(value)!r}")
+            param_sets.append(";".join(encoded))
+
+        return await bridge.call(
+            "add-realtime-effects",
+            {
+                "track_id": track_id,
+                "effect_ids": "|".join(ids),
+                "parameters_list": "|".join(param_sets),
+            },
+        )
+
+    @mcp.tool()
     async def list_realtime_effects(track_id: int) -> dict:
         """List the realtime effect chain on a track or the Master bus, with
         each effect's index (for remove_realtime_effect/set_realtime_effect_active),
