@@ -50,7 +50,27 @@ pip install -e .
 
 Requires Python 3.10+. The only runtime dependency is the `mcp` SDK — the bridge to Audacity4-Dev is a plain `asyncio` TCP client, nothing else to install.
 
-## 3. Verify the connection
+## 3. Authentication (nothing to configure)
+
+The bridge requires a token on every request. Audacity generates one on first
+run and writes it to its own profile directory; this server reads it from the
+same place, so there is normally nothing to set up:
+
+| Platform | Token file |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\Audacity\Audacity4Development\mcp_token` |
+| macOS | `~/Library/Application Support/Audacity/Audacity4Development/mcp_token` |
+| Linux | `~/.local/share/Audacity/Audacity4Development/mcp_token` |
+
+The file is readable only by your own account, which is what keeps other users
+and web pages out — a page you visit can reach the port, but cannot read a local
+file. Set `AUDACITY4_MCP_TOKEN` to override the file, for setups where Audacity's
+profile directory isn't reachable (containers, a bridge on another machine).
+
+If Audacity has never been started, the token won't exist yet and this server
+will say so, listing every path it looked in.
+
+## 4. Verify the connection
 
 With Audacity4-Dev running and a project open:
 
@@ -70,7 +90,7 @@ asyncio.run(main())
 
 If this prints real project info (path, tracks, etc.) instead of a connection error, the bridge is working.
 
-## 4. Point your MCP client at it
+## 5. Point your MCP client at it
 
 For Claude Desktop or Claude Code, add to your MCP config (`claude_desktop_config.json` or equivalent):
 
@@ -101,6 +121,8 @@ Restart your client. It should now see the full tool list from [TOOLS.md](TOOLS.
 
 ## Troubleshooting
 
+- **`unauthorized` / token errors**: the token this server read no longer matches the one Audacity is using. Restart Audacity, or unset `AUDACITY4_MCP_TOKEN` if it is pointing at a stale value. If the message says the token could not be read at all, start Audacity once so it can create the file.
+- **`Connection refused`, or connections being dropped while it "should" work**: the bridge accepts one client at a time, so a second tool talking to port 2212 will be rejected while this server is connected.
 - **Connection refused**: Audacity4-Dev isn't running, or its `mcp` module failed to start — check the Audacity window/console for errors.
 - **A command times out with a "dialog needs a human to click through it" message**: exactly what it says — some effects show a native modal dialog on precondition failure (e.g. wrong track/clip selection) that blocks Audacity's whole main thread. Check the Audacity window, dismiss the dialog, retry.
 - **Audacity crashes or won't reopen cleanly after a bad session**: never force-kill it (`taskkill /F` or similar) — this corrupts session-recovery state and causes a recurring "convert project" popup on next launch. Close it from the window (or ask it to close) instead.

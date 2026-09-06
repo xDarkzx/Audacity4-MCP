@@ -4,7 +4,7 @@ All tools take/return plain JSON. Every tool listed here maps to a real command 
 
 Jump to: [Tool Profiles](#tool-profiles) · [Transport](#transport) · [Project](#project) · [Track](#track) · [Selection](#selection) · [Edit](#edit) · [Effects](#effects) · [Realtime/VST3 Effects](#realtimevst3-effects) · [Generate](#generate) · [Labels](#labels) · [Analysis](#analysis) · [Transcription](#transcription-experimental) · [Cleanup Pipelines](#cleanup-pipelines)
 
-Everything below is the **full** profile (156 tools). See [Tool Profiles](#tool-profiles) if you want your MCP client to only load the tools for one workflow.
+Everything below is the **full** profile (159 tools). See [Tool Profiles](#tool-profiles) if you want your MCP client to only load the tools for one workflow.
 
 ## Tool Profiles
 
@@ -173,13 +173,16 @@ Non-destructive — stays adjustable, removable, and its native plugin GUI can s
 |---|---|
 | `suggest_and_add_effect(track_id, category)` | Auto-pick a good *installed* plugin for a goal and add it as a realtime effect — no need to know which of your VSTs does reverb/compression/EQ/etc. `category`: one of `reverb`, `compressor`, `eq`, `delay`, `limiter`, `distortion`, `gate`, `chorus`, `phaser`, `flanger`, `deesser`. Matches by keyword against title/vendor (VST3 plugins don't reliably self-report a category), with a soft preference for a few well-regarded vendors — not an objective quality ranking, there isn't one. Returns `alternatives` too, so the pick isn't a black box. |
 | `add_realtime_effect(track_id, effect_id)` | Add an effect to a track's chain, or the Master bus (`track_id=-2`). **Requires the real `id` from `list_effects`, not `title`** — no title fallback here, unlike destructive `apply-effect`. |
+| `add_realtime_effects(track_id, effects)` | **Build a whole chain in one call**, each effect configured as it is added: `[{"effect_id": ..., "parameters": {id: value}}]`. Prefer this for setting up a chain — and note it is the *reliable* way to configure a plugin, because parameters are written while the effect is freshly added and its editor cannot be open yet (see the note on `set_effect_parameters`). |
 | `list_realtime_effects(track_id)` | List a chain's effects: index, name, active state. |
 | `remove_realtime_effect(track_id, index)` | Remove by index. |
 | `set_realtime_effect_active(track_id, index, active)` | Enable/bypass without removing. |
 | `list_effect_parameters(track_id, index)` | Real, plugin-reported parameters — name, units, min/max/default/current value, formatted string. Works uniformly across Builtin/VST3/LV2/AudioUnit. |
 | `set_effect_parameter(track_id, index, parameter_id, value)` | Set one parameter to an exact value. **VST3 min/max is typically normalized 0–1** for some plugins but real display units (e.g. log2-Hz, dB) for others — always re-read `currentValueString` after setting rather than assuming the input scale, AND re-read again after some time has passed — the command reporting success with the right value doesn't guarantee it stuck. See [Known Gaps](../README.md#known-gaps): this can silently revert on some plugins (confirmed on FabFilter Pro-Q 3's per-band controls), for continuous parameters too, not just discrete ones. |
+| `set_effect_parameters(track_id, index, parameters)` | **Set several parameters in one commit** — `{parameter_id: value}`. Prefer this whenever more than one value is involved: the whole batch is written before anything is flushed, so the plugin is never briefly half-configured in a way you can hear while it processes (an EQ band enabled before its frequency is set, say), and it is one settings commit rather than one per value. Nothing is written if any entry is invalid. **The plugin's editor must be closed** — a write made while it is open is reverted. |
 | `list_effect_presets(track_id, index)` | Real factory presets, if the plugin format exposes any via the standard VST3 API. Empty is a normal result for plugins (FabFilter, Valhalla) that keep presets in their own custom in-plugin browser instead. |
 | `apply_effect_preset(track_id, index, preset_id)` | Apply a factory preset by id. |
+| `apply_effects(effects, select_all=True)` | **Apply a sequence of destructive effects in one call** — `[{"effect_id": ..., "params": "Key=Value ..."}]`. The selection is made once instead of before every effect, and processing stops at the first failure, naming exactly which effects were applied so you know how many times to undo. Each effect is still its own undo step. |
 
 ## Generate
 

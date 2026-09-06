@@ -6,7 +6,33 @@ This is early alpha under active daily development.
 
 ## [Unreleased]
 
-### Added: Tool Profiles, So a Session Doesn't Have to Load All 156 Tools
+### Security: the Bridge Is Authenticated, and a Web Page Could Previously Drive Audacity
+
+The README used to state that the bridge was "not reachable from browser JS ... so no DNS-rebinding vector". That was **wrong**, and testing it proved so: a browser cannot speak this line-delimited protocol, but it can `fetch()` an HTTP POST to `127.0.0.1:2212` with `Content-Type: text/plain` (no CORS preflight), and once the header lines were skipped as unparseable the request **body** was just another line — which executed. CORS blocking the page from reading the reply is irrelevant once the command has already run. Verified end to end, then fixed two independent ways: connections whose first line is an HTTP request line are dropped, and every request now needs a token.
+
+The token is generated on first run from the OS cryptographic RNG (256 bits) and written to Audacity's own profile directory; this client reads it from the same place, so there is nothing to configure. `AUDACITY4_MCP_TOKEN` overrides it for containers or remote setups. Auth fails closed — if no token could be established, every request is refused rather than falling back to serving callers unauthenticated.
+
+Two problems found while hardening the token itself: it was being written verbatim into Audacity's log files (which is exactly what users attach to bug reports) — now redacted; and it was drawn from `std::random_device`, which the C++ standard does not require to be a cryptographic source. Comparison is now constant-time.
+
+Also fixed in the transport: a use-after-free that crashed the app when several messages arrived in one packet (the request was wrapped no-copy but the handler resolves asynchronously, after the buffer is gone), and an unbounded receive buffer.
+
+### Fixed: Client Silently Swallowed Protocol Errors
+
+A JSON-RPC error carries no `result`, so checking only `result.isError` turned an unauthorized or unknown-method reply into an empty success. Confirmed live: a deliberately wrong token came back as `{}` instead of raising. Those now raise, with the unauthorized case explaining that the token did not match.
+
+### Added: Batched Commands — Chains and Parameters in One Call
+
+Three new tools, each fixing a correctness problem rather than just call count:
+
+- `add_realtime_effects(track_id, effects)` — builds a whole chain, each effect configured as it is added. The four-plugin music-master chain took 4 adds + 24 parameter writes; it is now **one call**. This is also the *reliable* way to configure a plugin, because parameters are written while the effect is freshly added and its editor cannot be open yet.
+- `set_effect_parameters(track_id, index, parameters)` — several parameters in one commit. Every gesture is opened, every value written, then the gestures closed, so only the first close flushes and the plugin is never briefly half-configured in a way you can hear while it processes (an EQ band enabled before its frequency is set). A five-band EQ curve was 20 calls and 20 commits; now one.
+- `apply_effects(effects, select_all)` — a destructive chain in one call. The selection is made once instead of before every effect, and it stops at the first failure naming what was applied. Previously a mid-pipeline failure left audio destructively half-processed with no indication of how far it got. Each effect is still its own undo step.
+
+### Fixed: Analysis Assumed Every Recording Was Speech
+
+The noise-floor, SNR and click checks only mean something for speech, where the quietest passage is room tone. In continuous music the quietest passage *is* the music, so they flagged a high noise floor and poor SNR for practically every mix — and the advice that followed (noise reduction profiled from the opening moments) would have damaged the material. Measured on a real ambient mix: "VERY NOISY: SNR is only 14.3 dB", "HIGH NOISE FLOOR: -15.7 dB - needs noise reduction" and 44 "clicks", none of which were faults. `auto_analyze_audio` now takes `content_type` (`speech`/`music`/`auto`), detects which by the fact that speech has pauses and music does not, and reports which profile it used. The recommendation also listed only two of the eight pipelines, so `auto_master_music`, `auto_lofi_effect`, `auto_cleanup_interview`, `auto_cleanup_vocal` and `auto_cleanup_live` were never suggested to anyone.
+
+### Added: Tool Profiles, So a Session Doesn't Have to Load All 159 Tools
 
 By default every tool still loads (nothing changes for existing configs). Set `AUDACITY4_MCP_PROFILE` in an MCP client's `env` block to register only a workflow-scoped subset instead, cutting the tool-schema footprint sent to the model every turn. Six built-in profiles: `full` (default, all 12 modules), `cleanup` (podcast/audiobook/vocal cleanup + mastering, no cutting/labeling), `editing` (cut/trim/split/label, no effects), `mastering` (music mastering + generators), `transcription` (transcribe-and-label only), `minimal` (bare transport/track/project). Fine-grained `AUDACITY4_MCP_INCLUDE_MODULES`/`EXCLUDE_MODULES`/`INCLUDE_TOOLS`/`EXCLUDE_TOOLS` env vars layer on top of whichever profile is picked. `audacity4-mcp --profile-info --profile <name> [--json]` reports a profile's real registered tool count and schema size without starting a session. Modeled directly on `reaper-mcp`'s existing `REAPER_MCP_PROFILE` system after reading its `tool_registry.py`.
 
