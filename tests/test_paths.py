@@ -100,3 +100,31 @@ async def test_previously_unguarded_tools_now_refuse_system_directories(monkeypa
             await call()
 
     fake_bridge.call.assert_not_called()
+
+
+def test_token_paths_follow_xdg_data_home(monkeypatch, tmp_path):
+    """Qt resolves AppLocalDataLocation through XDG_DATA_HOME on Linux, so the
+    client has to as well - hardcoding ~/.local/share means the token is simply
+    not found on any system that sets it."""
+    from server4.bridge_client import BridgeClient
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    paths = [str(p) for p in BridgeClient._default_token_paths()]
+    assert any(str(tmp_path / "xdg") in p for p in paths)
+
+
+def test_token_paths_fall_back_to_local_share(monkeypatch):
+    from server4.bridge_client import BridgeClient
+
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    paths = [p.as_posix() for p in BridgeClient._default_token_paths()]
+    assert any(".local/share/Audacity" in p for p in paths)
+
+
+def test_token_paths_cover_macos_and_both_app_names(monkeypatch):
+    from server4.bridge_client import BridgeClient
+
+    paths = [p.as_posix() for p in BridgeClient._default_token_paths()]
+    assert any("Library/Application Support/Audacity" in p for p in paths)
+    assert any(p.endswith("Audacity4/mcp_token") for p in paths)
+    assert any(p.endswith("Audacity4Development/mcp_token") for p in paths)

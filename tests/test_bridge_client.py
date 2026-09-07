@@ -286,3 +286,87 @@ async def test_reconnects_after_the_peer_restarts():
     finally:
         await client.close()
         await restarted.stop()
+
+
+class _RotatingTokenServer:
+    """Rejects any token but the one it currently expects, the way Audacity does
+    after its token has been regenerated."""
+
+    def __init__(self, expected: str):
+        self.expected = expected
+        self.seen: list[str] = []
+
+    async def _handle(self, reader, writer):
+        while True:
+            line = await reader.readline()
+            if not line:
+                break
+            req = json.loads(line)
+            self.seen.append(req.get("token"))
+            if req.get("token") != self.expected:
+                resp = {"jsonrpc": "2.0", "id": req.get("id"),
+                        "error": {"code": -32001, "message": "Unauthorized"}}
+            else:
+                resp = {"jsonrpc": "2.0", "id": req.get("id"),
+                        "result": {"content": [{"text": "ok", "type": "text"}], "isError": False}}
+            writer.write((json.dumps(resp) + "\n").encode())
+            await writer.drain()
+
+    async def start(self):
+        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        return self.server.sockets[0].getsockname()[1]
+
+    async def stop(self):
+        self.server.close()
+        await self.server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_rereads_the_token_when_audacity_has_rotated_it(monkeypatch, tmp_path):
+    """The token is read once and cached, so a regenerated one (reset profile,
+    reinstall) left the client sending a stale value until it was restarted. A
+    rejected request provably did not run, so re-reading and retrying once is
+    safe."""
+    monkeypatch.delenv("AUDACITY4_MCP_TOKEN", raising=False)
+
+    token_file = tmp_path / "mcp_token"
+    token_file.write_text("stale-token-that-is-long-enough-000", encoding="utf-8")
+    monkeypatch.setattr(BridgeClient, "_default_token_paths", classmethod(lambda cls: [token_file]))
+
+    server = _RotatingTokenServer("fresh-token-that-is-long-enough-000")
+    port = await server.start()
+    client = BridgeClient(host="127.0.0.1", port=port)
+
+    # Prime the cache with the stale value, then rotate the file underneath.
+    assert client._resolve_token() == "stale-token-that-is-long-enough-000"
+    token_file.write_text("fresh-token-that-is-long-enough-000", encoding="utf-8")
+
+    try:
+        result = await client.call("play-stop", {})
+        assert result["content"][0]["text"] == "ok"
+        assert server.seen == [
+            "stale-token-that-is-long-enough-000",
+            "fresh-token-that-is-long-enough-000",
+        ]
+    finally:
+        await client.close()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_does_not_second_guess_an_explicit_token(monkeypatch, tmp_path):
+    """An explicit AUDACITY4_MCP_TOKEN is the caller's own choice - rejecting it
+    is reported, not quietly worked around by reading some file instead."""
+    monkeypatch.setenv("AUDACITY4_MCP_TOKEN", "explicitly-set-token-000000000000")
+
+    server = _RotatingTokenServer("something-else-entirely-0000000000")
+    port = await server.start()
+    client = BridgeClient(host="127.0.0.1", port=port)
+
+    try:
+        with pytest.raises(RuntimeError, match="unauthorized"):
+            await client.call("play-stop", {})
+        assert server.seen == ["explicitly-set-token-000000000000"]
+    finally:
+        await client.close()
+        await server.stop()
