@@ -6,6 +6,24 @@ This is early alpha under active daily development.
 
 ## [Unreleased]
 
+### Fixed: Restarting Audacity No Longer Costs a Command
+
+Restarting Audacity left this client holding a socket that still looked usable — nothing on this side had closed it, so `is_closing()` was `False` — and the next command was written into a dead connection and failed. Every session hit that on its first call after a restart, and the only way through was to call twice.
+
+asyncio marks the reader at EOF as soon as the peer goes away, so a stale connection can be spotted before anything is sent. A failed *send* is also retried once, since a request that never reached Audacity cannot have run. A failure *after* the request is on the wire is never retried — re-sending could execute a command twice, which matters when the command deletes audio — and is reported instead.
+
+The test restarts a fake server on the same port and asserts the next call succeeds. Two things had to be got right for it to mean anything: it was confirmed to fail without the fix, and the fake restart had to drop its live sockets, because `asyncio.Server.close()` only stops *accepting* — without that the client kept talking to the "stopped" server and the test proved nothing.
+
+### Hardening: a Use-After-Free in the Bridge, and a Notification That Could Stick Forever
+
+Two defects found by auditing the C++ for the failure modes that don't show up in normal use — races, unbounded growth, dangling pointers.
+
+**A client disconnecting mid-command wrote through a freed socket.** The transport's response callback captured a raw `this` and used `m_socket`, but the request handler resolves asynchronously and a `TcpConnection` deletes itself when its socket disconnects. If a client went away while its command was still running, the late response wrote through a destroyed object. This is the same shape as the dangling-request bug fixed earlier in the same function — that fix protected the data, this one protects the object. Now guarded with a `QPointer`, which clears itself on destruction so the late response is dropped.
+
+**An effect removed mid-batch could freeze its own editor updates.** Introduced by the batching fix above: `endParameterGesture` returned early when the instance could not be resolved, before the gesture bookkeeping. An instance can disappear between begin and end — effect removed, track deleted, project closed — and the count then stayed raised for the rest of the session, so every later write on that instance id deferred its notification forever. The bookkeeping now runs unconditionally; only the announcement itself, which needs a live instance to read from, is skipped.
+
+Checked and clean in the same pass: no unbounded loops in the MCP module, no raw `new`/`delete`, no mutable global state (every static is a pure helper, so there is no race surface), and the command history is capped.
+
 ### Fixed in the Fork: VST3 Parameter Writes Were Lost While a Plugin's Editor Was Open
 
 The oldest known limitation in this project, and it was never what it looked like. Setting a VST3 parameter reported success with the right value and then silently reverted. It was recorded first as affecting only discrete/list parameters (Pro-Q 3's per-band Shape), then as affecting continuous ones too, then as an Audacity-wide bug worth reporting upstream. It is none of those: it is an automation problem, and a human dragging a slider never hits it.
