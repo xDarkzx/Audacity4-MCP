@@ -1,163 +1,243 @@
 import asyncio
 import json
+
 import pytest
 from server4.bridge_client import BridgeClient
 
-
-class _FakeServer:
-    """Minimal asyncio TCP server that echoes back a canned MCP response."""
-    def __init__(self, response: dict):
-        self.response = response
-        self.received = None
-
-    async def _handle(self, reader, writer):
-        line = await reader.readline()
-        self.received = json.loads(line)
-        writer.write((json.dumps(self.response) + "\n").encode())
-        await writer.drain()
-        writer.close()
-
-    async def start(self):
-        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
-        return self.server.sockets[0].getsockname()[1]
-
-    async def stop(self):
-        self.server.close()
-        await self.server.wait_closed()
+# The bridge is exercised through a fake transport rather than a real loopback
+# server, matching how the v3 and Reaper MCP suites test their own clients.
+#
+# Real asyncio listeners used to be used here, and they repeatedly broke CI.
+# Server.wait_closed() waits for open connections on some Python versions and
+# not others, so any test whose server still held a live connection hung the
+# job until GitHub killed it at the timeout - no output, no failing test, just
+# a cancelled run. It bit once on the silent server, and again on the
+# token-rotation server added later, on Python 3.12 only, while 3.10, 3.11 and
+# 3.13 passed.
+#
+# asyncio.open_connection is the single point where BridgeClient touches the
+# network, so replacing it keeps connect(), close(), the staleness check, the
+# reconnect path and the whole JSON-RPC exchange under test, with no port to
+# bind and nothing left open to wait on.
 
 
-class _SilentServer:
-    """Accepts the connection and reads the request, but never responds -
-    simulating Audacity blocked on a native dialog it can't dismiss itself."""
+class _Connection:
+    """One client connection, with the peer's replies queued in memory."""
+
     def __init__(self):
-        self._writer = None
+        self.requests: list[dict] = []
+        self.closed = False
+        self.dropped = False
+        self._lines: list[bytes] = []
+        self._ready = asyncio.Event()
 
-    async def _handle(self, reader, writer):
-        await reader.readline()
-        # Deliberately never write a response here - but DO keep a strong
-        # reference to the writer, and explicitly close it in stop() (below).
-        # Without keeping the reference, once _handle returns, (reader,
-        # writer) have no other referent and can be garbage collected at any
-        # time, which closes the underlying transport - racing the client's
-        # short timeout non-deterministically (confirmed flaky in CI: read
-        # returned EOF - "connection closed" - instead of the intended
-        # TimeoutError, depending on GC timing per platform).
-        self._writer = writer
+    def reply(self, message: dict) -> None:
+        self._lines.append((json.dumps(message) + "\n").encode())
+        self._ready.set()
 
-    async def start(self):
-        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
-        return self.server.sockets[0].getsockname()[1]
+    def drop(self) -> None:
+        """The peer goes away, the way Audacity does when it is closed."""
+        self.dropped = True
+        self._ready.set()
 
-    async def stop(self):
-        self.server.close()
-        # Python 3.12+ changed Server.wait_closed() to also wait for open
-        # connections to close, not just the listening socket. This
-        # connection is deliberately never closed by _handle (simulating a
-        # stuck dialog) - without explicitly closing it here too,
-        # wait_closed() hangs forever on 3.12+ (confirmed live: every
-        # Python 3.12/3.13 CI job hung until killed, every 3.10/3.11 job
-        # passed normally - the version boundary matches exactly).
-        if self._writer is not None:
-            self._writer.close()
-        await self.server.wait_closed()
+    @property
+    def at_eof(self) -> bool:
+        return self.dropped and not self._lines
+
+    async def next_line(self) -> bytes:
+        while not self._lines:
+            if self.dropped:
+                return b""
+            self._ready.clear()
+            await self._ready.wait()
+        return self._lines.pop(0)
 
 
-class _StaleResponseServer:
-    """Sends a leftover response for an earlier (never-matched) call id before
-    the real response for the current call, simulating a delayed response from
-    a command that opened a blocking dialog on a previous call."""
-    def __init__(self, stale_id: int, real_result: dict):
-        self.stale_id = stale_id
-        self.real_result = real_result
+class _FakeReader:
+    def __init__(self, conn: _Connection):
+        self._conn = conn
 
-    async def _handle(self, reader, writer):
-        line = await reader.readline()
-        request = json.loads(line)
-        stale = {"id": self.stale_id, "jsonrpc": "2.0",
-                  "result": {"content": [{"text": "stale", "type": "text"}], "isError": False}}
-        real = {"id": request["id"], "jsonrpc": "2.0", "result": self.real_result}
-        writer.write((json.dumps(stale) + "\n").encode())
-        writer.write((json.dumps(real) + "\n").encode())
-        await writer.drain()
-        writer.close()
+    async def readline(self) -> bytes:
+        return await self._conn.next_line()
 
-    async def start(self):
-        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
-        return self.server.sockets[0].getsockname()[1]
+    def at_eof(self) -> bool:
+        return self._conn.at_eof
 
-    async def stop(self):
-        self.server.close()
-        await self.server.wait_closed()
+
+class _FakeWriter:
+    def __init__(self, conn: _Connection, peer: "_FakePeer"):
+        self._conn = conn
+        self._peer = peer
+
+    def write(self, payload: bytes) -> None:
+        for raw in payload.splitlines():
+            if raw:
+                self._peer.handle(self._conn, json.loads(raw))
+
+    async def drain(self) -> None:
+        pass
+
+    def is_closing(self) -> bool:
+        return self._conn.closed
+
+    def close(self) -> None:
+        self._conn.closed = True
+
+    async def wait_closed(self) -> None:
+        pass
+
+
+class _FakePeer:
+    """Stands in for Audacity's bridge.
+
+    `responder` maps a request to the lines the peer writes back; returning an
+    empty list models a peer that reads the request and never answers.
+    """
+
+    def __init__(self, responder):
+        self._responder = responder
+        self.connections: list[_Connection] = []
+        self.limits: list[int] = []
+
+    @property
+    def requests(self) -> list[dict]:
+        return [r for c in self.connections for r in c.requests]
+
+    def install(self, monkeypatch) -> "_FakePeer":
+        monkeypatch.setattr(asyncio, "open_connection", self._open)
+        return self
+
+    async def _open(self, host, port, limit=None):
+        self.limits.append(limit)
+        conn = _Connection()
+        self.connections.append(conn)
+        return _FakeReader(conn), _FakeWriter(conn, self)
+
+    def handle(self, conn: _Connection, request: dict) -> None:
+        conn.requests.append(request)
+        for message in self._responder(request):
+            conn.reply(message)
+
+
+def _ok(request: dict, text: str = "ok") -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": request["id"],
+        "result": {"content": [{"text": text, "type": "text"}], "isError": False},
+    }
+
+
+def _unauthorized(request: dict) -> list[dict]:
+    return [{"jsonrpc": "2.0", "id": request["id"],
+             "error": {"code": -32001, "message": "Unauthorized"}}]
 
 
 @pytest.mark.asyncio
-async def test_call_sends_correct_jsonrpc_shape_and_parses_result():
-    fake = _FakeServer({
-        "id": 1, "jsonrpc": "2.0",
-        "result": {"content": [{"text": "ok", "type": "text"}], "isError": False},
-    })
-    port = await fake.start()
-    client = BridgeClient(host="127.0.0.1", port=port)
+async def test_call_sends_correct_jsonrpc_shape_and_parses_result(monkeypatch):
+    peer = _FakePeer(lambda req: [_ok(req)]).install(monkeypatch)
+    client = BridgeClient(host="127.0.0.1", port=2212)
 
     result = await client.call("play-stop", {})
 
-    assert fake.received["method"] == "tools/call"
-    assert fake.received["params"]["name"] == "mcp_play-stop"
-    assert fake.received["params"]["arguments"] == {}
+    sent = peer.requests[0]
+    assert sent["jsonrpc"] == "2.0"
+    assert sent["method"] == "tools/call"
+    assert sent["params"]["name"] == "mcp_play-stop"
+    assert sent["params"]["arguments"] == {}
     assert result["content"][0]["text"] == "ok"
 
     await client.close()
-    await fake.stop()
 
 
 @pytest.mark.asyncio
-async def test_call_raises_on_error_response():
-    fake = _FakeServer({
-        "id": 1, "jsonrpc": "2.0",
-        "result": {"content": [{"text": "No project is currently open", "type": "text"}], "isError": True},
-    })
-    port = await fake.start()
-    client = BridgeClient(host="127.0.0.1", port=port)
+async def test_connection_asks_for_a_line_limit_big_enough_for_a_plugin_dump(monkeypatch):
+    """asyncio's default 64KB readline limit is too small for a real
+    list-effect-parameters dump (FabFilter Pro-Q 3's blew past it live, raising
+    LimitOverrunError), so the client has to ask for a bigger one."""
+    peer = _FakePeer(lambda req: [_ok(req)]).install(monkeypatch)
+    client = BridgeClient(port=2212)
+
+    await client.call("list-effect-parameters", {})
+
+    assert peer.limits == [BridgeClient.MAX_LINE_BYTES]
+    assert BridgeClient.MAX_LINE_BYTES >= 16 * 1024 * 1024
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_call_raises_on_error_response(monkeypatch):
+    def responder(req):
+        return [{
+            "jsonrpc": "2.0",
+            "id": req["id"],
+            "result": {
+                "content": [{"text": "No project is currently open", "type": "text"}],
+                "isError": True,
+            },
+        }]
+
+    _FakePeer(responder).install(monkeypatch)
+    client = BridgeClient(port=2212)
 
     with pytest.raises(RuntimeError, match="No project is currently open"):
         await client.call("add-label-track", {})
 
     await client.close()
-    await fake.stop()
 
 
 @pytest.mark.asyncio
-async def test_call_discards_stale_response_and_matches_by_id():
-    fake = _StaleResponseServer(
-        stale_id=999,
-        real_result={"content": [{"text": "real answer", "type": "text"}], "isError": False},
-    )
-    port = await fake.start()
-    client = BridgeClient(host="127.0.0.1", port=port)
+async def test_call_discards_stale_response_and_matches_by_id(monkeypatch):
+    """A command that opened a blocking dialog can answer late. Its response must
+    not be misread as the answer to a later, unrelated call."""
+    def responder(req):
+        stale = {
+            "jsonrpc": "2.0",
+            "id": 999,
+            "result": {"content": [{"text": "stale", "type": "text"}], "isError": False},
+        }
+        return [stale, _ok(req, "real answer")]
+
+    _FakePeer(responder).install(monkeypatch)
+    client = BridgeClient(port=2212)
 
     result = await client.call("select-all", {})
-
     assert result["content"][0]["text"] == "real answer"
 
     await client.close()
-    await fake.stop()
 
 
 @pytest.mark.asyncio
-async def test_call_times_out_with_actionable_dialog_message():
-    fake = _SilentServer()
-    port = await fake.start()
-    client = BridgeClient(host="127.0.0.1", port=port)
+async def test_call_times_out_with_actionable_dialog_message(monkeypatch):
+    """Audacity blocked on a native dialog reads the request and never answers."""
+    _FakePeer(lambda req: []).install(monkeypatch)
+    client = BridgeClient(port=2212)
     client.RESPONSE_TIMEOUT_SECONDS = 0.05
 
     with pytest.raises(RuntimeError, match="dialog"):
         await client.call("apply-effect", {"effect_id": "Crossfade clips", "params": ""})
 
-    # A timed-out call must force a reconnect, not leave a suspect connection
-    # in place for the next call to read garbage from.
+    # A timed-out call must force a reconnect, not leave a suspect connection in
+    # place for the next call to read garbage from.
     assert client._writer is None
 
-    await fake.stop()
+
+@pytest.mark.asyncio
+async def test_call_reports_the_peer_hanging_up_mid_request(monkeypatch):
+    """Losing Audacity while a command is in flight is reported, not returned as
+    an empty success."""
+    peer = _FakePeer(lambda req: []).install(monkeypatch)
+    client = BridgeClient(port=2212)
+
+    async def hang_up():
+        while not peer.connections:
+            await asyncio.sleep(0)
+        peer.connections[-1].drop()
+
+    task = asyncio.ensure_future(hang_up())
+    with pytest.raises(RuntimeError, match="Connection closed"):
+        await client.call("project-get-info", {})
+    await task
 
 
 def test_token_prefers_env_var(monkeypatch):
@@ -184,13 +264,13 @@ def test_token_missing_raises_actionable_error(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_call_sends_the_token(monkeypatch):
     monkeypatch.setenv("AUDACITY4_MCP_TOKEN", "tok-42")
-    server = _FakeServer({"jsonrpc": "2.0", "id": 1, "result": {"isError": False, "content": []}})
-    port = await server.start()
-    client = BridgeClient(port=port)
+    peer = _FakePeer(lambda req: [_ok(req)]).install(monkeypatch)
+    client = BridgeClient(port=2212)
+
     await client.call("project-get-info", {})
+
+    assert peer.requests[0]["token"] == "tok-42"  # noqa: S105 - test fixture value
     await client.close()
-    await server.stop()
-    assert server.received["token"] == "tok-42"  # noqa: S105 - test fixture value
 
 
 @pytest.mark.asyncio
@@ -198,127 +278,55 @@ async def test_jsonrpc_error_is_raised_not_swallowed(monkeypatch):
     """A protocol-level error carries no "result", so checking only
     result.isError used to return {} as though the call had succeeded."""
     monkeypatch.setenv("AUDACITY4_MCP_TOKEN", "t")
-    server = _FakeServer({"jsonrpc": "2.0", "id": 1,
-                          "error": {"code": -32601, "message": "Method not found"}})
-    port = await server.start()
-    client = BridgeClient(port=port)
+
+    def responder(req):
+        return [{"jsonrpc": "2.0", "id": req["id"],
+                 "error": {"code": -32601, "message": "Method not found"}}]
+
+    _FakePeer(responder).install(monkeypatch)
+    client = BridgeClient(port=2212)
+
     with pytest.raises(RuntimeError, match="Method not found"):
         await client.call("bogus-command", {})
+
     await client.close()
-    await server.stop()
 
 
 @pytest.mark.asyncio
 async def test_unauthorized_error_explains_the_token(monkeypatch):
     monkeypatch.setenv("AUDACITY4_MCP_TOKEN", "t")
-    server = _FakeServer({"jsonrpc": "2.0", "id": 1,
-                          "error": {"code": -32001, "message": "Unauthorized"}})
-    port = await server.start()
-    client = BridgeClient(port=port)
+    _FakePeer(_unauthorized).install(monkeypatch)
+    client = BridgeClient(port=2212)
+
     with pytest.raises(RuntimeError, match="unauthorized"):
         await client.call("project-get-info", {})
+
     await client.close()
-    await server.stop()
-
-
-class _RestartableServer:
-    """Serves canned responses on a fixed port, and can be stopped and started
-    again - standing in for Audacity being restarted underneath the client."""
-
-    def __init__(self, response: dict):
-        self.response = response
-        self.port = 0
-        self.calls = 0
-        self._writers = []
-
-    async def _handle(self, reader, writer):
-        self._writers.append(writer)
-        while True:
-            line = await reader.readline()
-            if not line:
-                break
-            self.calls += 1
-            req = json.loads(line)
-            resp = dict(self.response)
-            resp["id"] = req.get("id")
-            writer.write((json.dumps(resp) + "\n").encode())
-            await writer.drain()
-
-    async def start(self, port: int = 0):
-        self.server = await asyncio.start_server(self._handle, "127.0.0.1", port)
-        self.port = self.server.sockets[0].getsockname()[1]
-        return self.port
-
-    async def stop(self):
-        # Server.close() only stops accepting - open connections survive it, so a
-        # client would happily keep talking to the "stopped" server and the test
-        # would prove nothing. Drop the live sockets too, which is what losing the
-        # process actually does.
-        for w in self._writers:
-            w.close()
-        self._writers.clear()
-        self.server.close()
-        await self.server.wait_closed()
 
 
 @pytest.mark.asyncio
-async def test_reconnects_after_the_peer_restarts():
+async def test_reconnects_after_the_peer_restarts(monkeypatch):
     """Restarting Audacity used to cost the next command: this side still held a
     socket whose is_closing() was False, so the call was spent discovering the
     peer had gone. The first call after a restart must now just work."""
-    ok = {"jsonrpc": "2.0", "result": {"content": [{"text": "ok", "type": "text"}], "isError": False}}
-
-    server = _RestartableServer(ok)
-    port = await server.start()
-    client = BridgeClient(host="127.0.0.1", port=port)
+    peer = _FakePeer(lambda req: [_ok(req)]).install(monkeypatch)
+    client = BridgeClient(port=2212)
 
     assert (await client.call("play-stop", {}))["content"][0]["text"] == "ok"
 
-    # Audacity goes away and comes back on the same port.
-    await server.stop()
-    await asyncio.sleep(0.05)
-    restarted = _RestartableServer(ok)
-    await restarted.start(port)
-    try:
-        result = await client.call("play-stop", {})
-        assert result["content"][0]["text"] == "ok"
-        assert restarted.calls == 1
-    finally:
-        await client.close()
-        await restarted.stop()
+    # Audacity goes away and comes back.
+    peer.connections[-1].drop()
 
+    result = await client.call("play-stop", {})
+    assert result["content"][0]["text"] == "ok"
 
-class _RotatingTokenServer:
-    """Rejects any token but the one it currently expects, the way Audacity does
-    after its token has been regenerated."""
+    # A fresh connection was opened, and the reconnect did not cost a command:
+    # the new connection served this call and only this call.
+    assert len(peer.connections) == 2
+    assert len(peer.connections[0].requests) == 1
+    assert len(peer.connections[1].requests) == 1
 
-    def __init__(self, expected: str):
-        self.expected = expected
-        self.seen: list[str] = []
-
-    async def _handle(self, reader, writer):
-        while True:
-            line = await reader.readline()
-            if not line:
-                break
-            req = json.loads(line)
-            self.seen.append(req.get("token"))
-            if req.get("token") != self.expected:
-                resp = {"jsonrpc": "2.0", "id": req.get("id"),
-                        "error": {"code": -32001, "message": "Unauthorized"}}
-            else:
-                resp = {"jsonrpc": "2.0", "id": req.get("id"),
-                        "result": {"content": [{"text": "ok", "type": "text"}], "isError": False}}
-            writer.write((json.dumps(resp) + "\n").encode())
-            await writer.drain()
-
-    async def start(self):
-        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
-        return self.server.sockets[0].getsockname()[1]
-
-    async def stop(self):
-        self.server.close()
-        await self.server.wait_closed()
+    await client.close()
 
 
 @pytest.mark.asyncio
@@ -329,44 +337,65 @@ async def test_rereads_the_token_when_audacity_has_rotated_it(monkeypatch, tmp_p
     safe."""
     monkeypatch.delenv("AUDACITY4_MCP_TOKEN", raising=False)
 
+    stale = "stale-token-that-is-long-enough-000"
+    fresh = "fresh-token-that-is-long-enough-000"
+
     token_file = tmp_path / "mcp_token"
-    token_file.write_text("stale-token-that-is-long-enough-000", encoding="utf-8")
+    token_file.write_text(stale, encoding="utf-8")
     monkeypatch.setattr(BridgeClient, "_default_token_paths", classmethod(lambda cls: [token_file]))
 
-    server = _RotatingTokenServer("fresh-token-that-is-long-enough-000")
-    port = await server.start()
-    client = BridgeClient(host="127.0.0.1", port=port)
+    def responder(req):
+        if req.get("token") != fresh:
+            return _unauthorized(req)
+        return [_ok(req)]
+
+    peer = _FakePeer(responder).install(monkeypatch)
+    client = BridgeClient(port=2212)
 
     # Prime the cache with the stale value, then rotate the file underneath.
-    assert client._resolve_token() == "stale-token-that-is-long-enough-000"
-    token_file.write_text("fresh-token-that-is-long-enough-000", encoding="utf-8")
+    assert client._resolve_token() == stale
+    token_file.write_text(fresh, encoding="utf-8")
 
-    try:
-        result = await client.call("play-stop", {})
-        assert result["content"][0]["text"] == "ok"
-        assert server.seen == [
-            "stale-token-that-is-long-enough-000",
-            "fresh-token-that-is-long-enough-000",
-        ]
-    finally:
-        await client.close()
-        await server.stop()
+    result = await client.call("play-stop", {})
+    assert result["content"][0]["text"] == "ok"
+    assert [r["token"] for r in peer.requests] == [stale, fresh]
+
+    await client.close()
 
 
 @pytest.mark.asyncio
-async def test_does_not_second_guess_an_explicit_token(monkeypatch, tmp_path):
+async def test_rotation_retry_happens_once_then_reports(monkeypatch, tmp_path):
+    """Re-reading the file must not turn into an unbounded retry loop when the
+    token on disk is genuinely wrong."""
+    monkeypatch.delenv("AUDACITY4_MCP_TOKEN", raising=False)
+
+    token_file = tmp_path / "mcp_token"
+    token_file.write_text("never-going-to-be-accepted-00000000", encoding="utf-8")
+    monkeypatch.setattr(BridgeClient, "_default_token_paths", classmethod(lambda cls: [token_file]))
+
+    peer = _FakePeer(_unauthorized).install(monkeypatch)
+    client = BridgeClient(port=2212)
+
+    with pytest.raises(RuntimeError, match="unauthorized"):
+        await client.call("play-stop", {})
+
+    assert len(peer.requests) == 2
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_does_not_second_guess_an_explicit_token(monkeypatch):
     """An explicit AUDACITY4_MCP_TOKEN is the caller's own choice - rejecting it
     is reported, not quietly worked around by reading some file instead."""
     monkeypatch.setenv("AUDACITY4_MCP_TOKEN", "explicitly-set-token-000000000000")
 
-    server = _RotatingTokenServer("something-else-entirely-0000000000")
-    port = await server.start()
-    client = BridgeClient(host="127.0.0.1", port=port)
+    peer = _FakePeer(_unauthorized).install(monkeypatch)
+    client = BridgeClient(port=2212)
 
-    try:
-        with pytest.raises(RuntimeError, match="unauthorized"):
-            await client.call("play-stop", {})
-        assert server.seen == ["explicitly-set-token-000000000000"]
-    finally:
-        await client.close()
-        await server.stop()
+    with pytest.raises(RuntimeError, match="unauthorized"):
+        await client.call("play-stop", {})
+
+    assert [r["token"] for r in peer.requests] == ["explicitly-set-token-000000000000"]
+
+    await client.close()
