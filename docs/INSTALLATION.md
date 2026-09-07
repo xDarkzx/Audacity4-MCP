@@ -4,9 +4,26 @@ Audacity4MCP has two halves that both need to be running: this Python MCP server
 
 ## 1. Build and run Audacity4-Dev
 
-`Audacity4-Dev` is a fork of Audacity 4 with a `src/mcp/` module added that starts a TCP JSON-RPC server on `127.0.0.1:2212` as soon as Audacity launches. It's built the same way as upstream Audacity 4 (see its own [BUILDING.md](../../Audacity4-Dev/BUILDING.md) for installing Qt/CMake/Ninja/etc. first) — this section covers only the exact commands that actually work on this project's tested setup (Windows, MSVC, Ninja) and the fork-specific gotchas that BUILDING.md doesn't mention.
+[**Audacity4-Dev-MCP**](https://github.com/xDarkzx/Audacity4-Dev-MCP) is a fork of Audacity 4 with a `src/mcp/` module added that starts a TCP JSON-RPC server on `127.0.0.1:2212` as soon as Audacity launches. It's built the same way as upstream Audacity 4 (see Audacity's own [BUILDING.md](https://github.com/audacity/audacity/blob/master/BUILDING.md) for installing Qt/CMake/Ninja first) — this section covers the exact commands that work on the tested setup (Windows, MSVC, Ninja) and the fork-specific gotchas BUILDING.md doesn't mention.
 
-**Prerequisite:** Visual Studio (2022 or newer) with the "Desktop development with C++" workload, plus Qt 6.10, CMake, and Ninja on PATH — see BUILDING.md. On Windows, the MSVC compiler environment must be loaded into the shell *before* running any `cmake`/build command below — a plain terminal won't have it. Do this once per terminal session:
+**Prerequisite:** Visual Studio (2022 or newer) with the "Desktop development with C++" workload, plus Qt 6.10, CMake, and Ninja on PATH — see BUILDING.md.
+
+### Clone it, with submodules
+
+Part of the bridge lives in the `muse` submodule (`muse/framework/rcontrol/mcp/`), so a plain `git clone` leaves a tree that cannot configure:
+
+```bash
+git clone --recurse-submodules https://github.com/xDarkzx/Audacity4-Dev-MCP.git
+cd Audacity4-Dev-MCP
+git checkout feature/mcp-audio-cleanup-pipelines
+git submodule update --init --recursive
+```
+
+If you already cloned without `--recurse-submodules`, the last line alone is enough. If you cloned before the submodule URL was corrected, run `git submodule sync --recursive` first — an older `.gitmodules` pointed `muse` at upstream MuseScore, where the pinned commit does not exist, and the checkout fails with a confusing "reference is not a tree" error.
+
+### Load the MSVC environment
+
+On Windows the compiler environment must be loaded into the shell *before* any `cmake`/build command below — a plain terminal won't have it. Do this once per terminal session:
 
 ```bat
 "C:\Program Files\Microsoft Visual Studio\<year>\<edition>\VC\Auxiliary\Build\vcvars64.bat"
