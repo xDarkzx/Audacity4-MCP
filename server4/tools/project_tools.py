@@ -1,42 +1,8 @@
 import os
+
 from mcp.server.fastmcp import FastMCP
 
-
-_BLOCKED_DIRS = None
-
-
-def _get_blocked_dirs():
-    """Directories that should never be read from or written to."""
-    global _BLOCKED_DIRS
-    if _BLOCKED_DIRS is None:
-        _BLOCKED_DIRS = set()
-        if os.name == "nt":
-            win_dir = os.environ.get("WINDIR", r"C:\Windows")
-            _BLOCKED_DIRS.add(os.path.normcase(os.path.realpath(win_dir)))
-            prog = os.environ.get("PROGRAMFILES", r"C:\Program Files")
-            _BLOCKED_DIRS.add(os.path.normcase(os.path.realpath(prog)))
-            prog86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
-            _BLOCKED_DIRS.add(os.path.normcase(os.path.realpath(prog86)))
-        else:
-            # /var deliberately excluded - on macOS it's a symlink to /private/var,
-            # which is also where the real temp directory lives, so blocking it
-            # would block every legitimate temp-file write on macOS too.
-            for d in ("/System", "/Library", "/usr", "/bin", "/sbin", "/etc"):
-                if os.path.isdir(d):
-                    _BLOCKED_DIRS.add(os.path.realpath(d))
-    return _BLOCKED_DIRS
-
-
-def _safe_path(path: str) -> str:
-    """Validate and canonicalize a file path. Returns the resolved absolute path."""
-    if not os.path.isabs(path):
-        raise ValueError("Path must be absolute")
-    resolved = os.path.realpath(path)
-    for blocked in _get_blocked_dirs():
-        check = os.path.normcase(resolved)
-        if check.startswith(blocked + os.sep) or check == blocked:
-            raise ValueError(f"Cannot access system directory: {blocked}")
-    return resolved
+from server4.paths import safe_path as _safe_path
 
 
 def _default_music_folder() -> str:

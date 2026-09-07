@@ -7,6 +7,8 @@ import wave
 
 from mcp.server.fastmcp import FastMCP
 
+from server4.paths import safe_path
+
 from server4.tools.effects_tools import _params
 
 
@@ -390,6 +392,10 @@ def register(mcp: FastMCP):
             limit: Maximum number of samples to export, 1-1000000. Default: 100
             units: Measurement scale - "dB" or "Linear". Default: "dB"
         """
+        # Checked like every other path this server writes to. It reached Nyquist
+        # unvalidated before, which made this the one file-writing tool with no
+        # guard at all.
+        path = safe_path(path)
         if not 1 <= limit <= 1000000:
             raise ValueError("limit must be 1 to 1000000")
         units_map = {"dB": 0, "Linear": 1}

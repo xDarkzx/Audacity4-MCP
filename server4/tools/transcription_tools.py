@@ -7,6 +7,8 @@ import time
 import uuid
 from mcp.server.fastmcp import FastMCP
 
+from server4.paths import safe_path
+
 _log = logging.getLogger("server4.transcription")
 
 _model_instance = None
@@ -375,6 +377,13 @@ def register(mcp: FastMCP):
     async def _start_transcription(model_size: str, language: str | None, task: str,
                                     select_all: bool = True, add_labels: bool = False,
                                     export_path: str | None = None, export_format: str | None = None) -> dict:
+        # Validated here rather than at the write, which happens inside the
+        # background job: a bad path should fail the caller now, not be discovered
+        # minutes later in a job status. The write also creates missing parent
+        # directories, so an unchecked path could make them anywhere.
+        if export_path:
+            export_path = safe_path(export_path)
+
         async with _job_lock:
             _cleanup_stale_jobs()
 
@@ -513,8 +522,7 @@ def register(mcp: FastMCP):
             language: ISO language code (e.g. "en") or None for auto-detect
             task: "transcribe" (spoken language) or "translate" (always English)
         """
-        from server4.tools.project_tools import _safe_path
-        path = _safe_path(path)
+        path = safe_path(path)
         if os.path.exists(path):
             raise ValueError(f"File already exists: {path}. Use a different filename to avoid overwriting.")
         if format not in SUBTITLE_FORMATS:

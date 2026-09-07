@@ -2,6 +2,8 @@ import json
 import os
 import re
 
+from server4.paths import safe_path
+
 from mcp.server.fastmcp import FastMCP
 
 MAX_EXPORT_SEGMENTS = 100
@@ -236,8 +238,7 @@ def register(mcp: FastMCP):
         Args:
             path: Absolute path to the labels text file.
         """
-        if not os.path.isabs(path):
-            raise ValueError("Path must be absolute")
+        path = safe_path(path)
         if not os.path.isfile(path):
             raise ValueError(f"File not found: {path}")
 
@@ -289,8 +290,7 @@ def register(mcp: FastMCP):
             path: Absolute path for the output labels file.
             overwrite: Set true to replace an existing file. Default: False.
         """
-        if not os.path.isabs(path):
-            raise ValueError("Path must be absolute")
+        path = safe_path(path)
         if not overwrite and os.path.exists(path):
             raise ValueError(f"File already exists: {path}. Pass overwrite=True to replace it.")
 
@@ -321,8 +321,7 @@ def register(mcp: FastMCP):
             format: Chapter format - simple, cue or podlove. Default: simple.
             overwrite: Set true to replace an existing file. Default: False.
         """
-        if not os.path.isabs(path):
-            raise ValueError("Path must be absolute")
+        path = safe_path(path)
         if format not in _ALLOWED_CHAPTER_FORMATS:
             raise ValueError(f"format must be one of {sorted(_ALLOWED_CHAPTER_FORMATS)}")
         if not overwrite and os.path.exists(path):
@@ -358,8 +357,7 @@ def register(mcp: FastMCP):
         Args:
             directory: Absolute path to the output directory.
         """
-        if not os.path.isabs(directory):
-            raise ValueError("Path must be absolute")
+        directory = safe_path(directory)
 
         labels = await _get_labels(bridge)
         if not labels:
