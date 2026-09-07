@@ -16,7 +16,13 @@ Fixed with two changes, both required: `FetchSettings` now flushes pending edits
 
 Verified with the editor open, every value read back independently afterwards. FabFilter Pro-Q 3: fifteen parameters in one call — four bands of frequency, gain and shape — all correct, **including the Shape dropdowns this project had recorded as impossible to set**. ValhallaVintageVerb, a second vendor, in the same chain: Mix 20%, PreDelay 10.00 ms, Decay 6.00 s. No writes lost in any run.
 
-Known follow-up: committing per edit means a batched set is no longer a single settings commit, so a chain can be heard passing through intermediate states while processing. The per-value read-back and notification is what forces this, and that is where it should be addressed.
+### Fixed in the Fork: A Batch of Parameter Writes Is One Commit Again
+
+Securing each edit as it was made — needed for the fix above — cost the batching its point: fifteen parameters produced fifteen settings commits, and a realtime chain could be heard passing through half-configured states while processing.
+
+The per-value commit was forced from above. `EffectParametersProvider` read the parameter back and emitted `parameterChanged` as soon as a write returned, and both reach `FetchSettings`, draining the edits the gesture was still accumulating. It now counts open gestures per instance and holds the read-back and the notification until the last one closes, so nothing reaches `FetchSettings` mid-batch. The VST service commits immediately only when no gesture is open, which keeps callers that write without bracketing safe.
+
+Measured with a 330-parameter write and the plugin editor open: **one commit of 330 changes where there were previously 330 commits**, with all 330 values still reading back correctly.
 
 ### Fixed in the Fork: VST3 Plugin Meters and Analysers Were Frozen
 
