@@ -285,11 +285,18 @@ def register(mcp: FastMCP):
             if add_labels:
                 job["current_step"] = "adding labels to Audacity"
                 _progress()
-                for i, seg in enumerate(segments):
-                    await bridge.call("select-time", {"start": seg["start"], "end": seg["end"]})
-                    await bridge.call("add-label", {"text": seg["text"]})
-                    job["current_step"] = f"adding labels to Audacity ({i + 1}/{len(segments)})"
-                    _progress()
+                # One call for the whole transcript. This was a select-time plus an
+                # add-label per segment, so a ten-minute recording spent several
+                # hundred round trips here, each one serialised behind the last.
+                wire = "\n".join(
+                    "{}\t{}\t{}".format(
+                        float(seg["start"]),
+                        float(seg["end"]),
+                        str(seg["text"]).replace("\t", " ").replace("\r", " ").replace("\n", " "),
+                    )
+                    for seg in segments
+                )
+                await bridge.call("add-labels", {"labels": wire})
                 job["steps_completed"].append(f"added {len(segments)} labels")
 
             if export_path and export_format:

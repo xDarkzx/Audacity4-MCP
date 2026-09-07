@@ -64,6 +64,33 @@ def _sanitize_filename(text: str, fallback: str = "segment") -> str:
     return cleaned or fallback
 
 
+def _labels_to_wire(labels: list[dict]) -> str:
+    """Labels to the tab-separated layout add-labels takes.
+
+    Audacity's own label file format, chosen over the "a=b;c=d" convention the
+    other batched commands use because label text is arbitrary - "a, b; c = d"
+    has to survive the trip, and there it would not. Tabs and newlines are the
+    field and record separators, so they are stripped rather than escaped, which
+    is what Audacity's own label files do too.
+    """
+    lines = []
+    for lbl in labels:
+        text = str(lbl.get("text", "")).replace("\t", " ").replace("\r", " ").replace("\n", " ")
+        lines.append(f"{float(lbl['start'])}\t{float(lbl['end'])}\t{text}")
+    return "\n".join(lines)
+
+
+def _first_json(result: dict) -> dict:
+    """The JSON payload of a response, which is always the last content block."""
+    content = result.get("content", [])
+    if not content:
+        return {}
+    try:
+        return json.loads(content[-1]["text"])
+    except (json.JSONDecodeError, KeyError):
+        return {}
+
+
 async def _get_labels(bridge) -> list[dict]:
     """Call list-labels and parse the JSON label array out of the response.
 
@@ -172,20 +199,27 @@ def register(mcp: FastMCP):
 
     @mcp.tool()
     async def label_add_batch(labels: list[dict]) -> dict:
-        """Add multiple labels in one call.
+        """Add multiple labels in a single call.
+
+        One round trip for the whole set, not two per label - which matters for
+        anything label-heavy, like turning a transcript into labels.
+
+        Nothing is added if any entry is malformed, so a rejected batch never
+        leaves a half-labelled project behind.
 
         Args:
             labels: List of {"start": float, "end": float, "text": str (optional)}.
+                A point label has start == end.
         """
-        added = 0
-        errors = []
-        for i, lbl in enumerate(labels):
-            try:
-                await label_add_at(lbl["start"], lbl["end"], lbl.get("text", ""))
-                added += 1
-            except Exception as e:
-                errors.append(f"label {i}: {e}")
-        return {"added": added, "total": len(labels), "errors": errors}
+        if not labels:
+            return {"added": 0, "total": 0, "keys": []}
+
+        payload = _first_json(await bridge.call("add-labels", {"labels": _labels_to_wire(labels)}))
+        return {
+            "added": int(payload.get("added", len(labels))),
+            "total": len(labels),
+            "keys": payload.get("keys", []),
+        }
 
     @mcp.tool()
     async def label_import(path: str) -> dict:
@@ -207,7 +241,11 @@ def register(mcp: FastMCP):
         if not os.path.isfile(path):
             raise ValueError(f"File not found: {path}")
 
-        added = 0
+        # Unparseable lines are collected and skipped rather than failing the
+        # import: a label file is often hand-edited, and refusing the whole file
+        # over one bad line helps nobody. Everything that does parse is then
+        # added in a single call.
+        parsed = []
         errors = []
         with open(path, encoding="utf-8") as handle:
             for i, line in enumerate(handle):
@@ -224,12 +262,19 @@ def register(mcp: FastMCP):
                 except ValueError:
                     errors.append(f"line {i + 1}: could not parse start/end from {line!r}")
                     continue
-                text = parts[2] if len(parts) > 2 else ""
-                try:
-                    await label_add_at(start, end, text)
-                    added += 1
-                except Exception as e:
-                    errors.append(f"line {i + 1}: {e}")
+                parsed.append({"start": start, "end": end, "text": parts[2] if len(parts) > 2 else ""})
+
+        added = 0
+        if parsed:
+            try:
+                # add-labels is all-or-nothing, so a call that returns without
+                # raising added every label. The count in the payload is a
+                # confirmation, not the source of truth - falling back to 0 when it
+                # cannot be parsed would under-report a successful import.
+                payload = _first_json(await bridge.call("add-labels", {"labels": _labels_to_wire(parsed)}))
+                added = int(payload.get("added", len(parsed)))
+            except Exception as e:
+                errors.append(str(e))
         return {"added": added, "path": path, "errors": errors}
 
     @mcp.tool()
@@ -389,18 +434,22 @@ def register(mcp: FastMCP):
             raise ValueError("interval must be > 0")
         if duration <= 0:
             raise ValueError("duration must be > 0")
-        added = 0
-        errors = []
+        marks = []
         n = 1
         t = 0.0
         while t <= duration:
-            try:
-                await label_add_at(t, t, f"{text_prefix} {n}")
-                added += 1
-            except Exception as e:
-                errors.append(f"{text_prefix} {n}: {e}")
+            marks.append({"start": t, "end": t, "text": f"{text_prefix} {n}"})
             t += interval
             n += 1
+
+        added = 0
+        errors = []
+        if marks:
+            try:
+                payload = _first_json(await bridge.call("add-labels", {"labels": _labels_to_wire(marks)}))
+                added = int(payload.get("added", len(marks)))
+            except Exception as e:
+                errors.append(str(e))
         return {"added": added, "interval": interval, "errors": errors}
 
     @mcp.tool()

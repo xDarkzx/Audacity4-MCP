@@ -40,10 +40,13 @@ async def test_label_import_parses_standard_label_file(monkeypatch, tmp_path):
 
     assert result["added"] == 2
     assert result["errors"] == []
+
+    # One call for the file, not a select-time plus an add-label per line.
     calls = fake_bridge.call.call_args_list
-    assert calls[0].args == ("select-time", {"start": 0.0, "end": 1.5})
-    assert calls[1].args == ("add-label", {"text": "Intro"})
-    assert calls[2].args == ("select-time", {"start": 2.0, "end": 2.0})
+    assert len(calls) == 1
+    command, args = calls[0].args
+    assert command == "add-labels"
+    assert args["labels"].splitlines() == ["0.0\t1.5\tIntro", "2.0\t2.0\tPoint marker"]
 
 
 @pytest.mark.asyncio
@@ -216,3 +219,44 @@ async def test_label_export_audio_segments_rejects_when_only_point_labels(monkey
 
     with pytest.raises(ValueError, match="point label"):
         await fake_mcp.tools["label_export_audio_segments"](str(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_label_add_batch_sends_one_call_and_keeps_awkward_text(monkeypatch):
+    """label_add_batch used to loop, spending two round trips per label while
+    documenting itself as adding them in one call. It must now send exactly one,
+    and label text containing the separators other batched commands use
+    (';' and '=') has to survive the trip."""
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch)
+    fake_bridge.call.return_value = {
+        "content": [{"text": "Added 2 labels"}, {"text": '{"added":2,"keys":["1:1","1:2"]}'}],
+        "isError": False,
+    }
+
+    result = await fake_mcp.tools["label_add_batch"]([
+        {"start": 0.0, "end": 1.0, "text": "a, b; c = d"},
+        {"start": 2.0, "end": 2.0},
+    ])
+
+    assert result == {"added": 2, "total": 2, "keys": ["1:1", "1:2"]}
+    calls = fake_bridge.call.call_args_list
+    assert len(calls) == 1
+    command, args = calls[0].args
+    assert command == "add-labels"
+    assert args["labels"].splitlines() == ["0.0\t1.0\ta, b; c = d", "2.0\t2.0\t"]
+
+
+@pytest.mark.asyncio
+async def test_label_add_batch_strips_separators_from_text(monkeypatch):
+    """Tabs and newlines are the wire format's own separators, so text carrying
+    them must not be able to forge extra labels."""
+    fake_mcp, fake_bridge = _fake_mcp_with(monkeypatch)
+    fake_bridge.call.return_value = {"content": [{"text": "ok"}], "isError": False}
+
+    await fake_mcp.tools["label_add_batch"]([
+        {"start": 0.0, "end": 1.0, "text": "evil\t9.0\t9.0\tinjected"},
+    ])
+
+    args = fake_bridge.call.call_args_list[0].args[1]
+    assert len(args["labels"].splitlines()) == 1
+    assert args["labels"] == "0.0\t1.0\tevil 9.0 9.0 injected"
