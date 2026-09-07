@@ -89,6 +89,25 @@ class BridgeClient:
                 self._host, self._port, limit=self.MAX_LINE_BYTES
             )
 
+    def _connection_is_stale(self) -> bool:
+        """Whether the peer has gone away since this connection was opened.
+
+        Restarting Audacity leaves this side holding a socket that still looks
+        usable - is_closing() is False, because nothing on this side closed it -
+        so the next command was spent discovering the peer had gone, and every
+        session hit a spurious failure on its first call after a restart.
+        asyncio marks the reader at EOF as soon as the peer closes, so this can
+        be seen before anything is sent.
+        """
+        if self._writer is None or self._reader is None:
+            return False
+        return self._writer.is_closing() or self._reader.at_eof()
+
+    async def _ensure_connection(self) -> None:
+        if self._connection_is_stale():
+            await self.close()
+        await self.connect()
+
     async def close(self) -> None:
         if self._writer:
             self._writer.close()
@@ -101,7 +120,7 @@ class BridgeClient:
         Raises RuntimeError if the response reports isError: true, or on a transport
         problem (connection refused, timeout, malformed response, or id mismatch)."""
         async with self._lock:
-            await self.connect()
+            await self._ensure_connection()
             self._id += 1
             call_id = self._id
             msg = {
@@ -111,8 +130,28 @@ class BridgeClient:
                 "token": self._resolve_token(),
                 "params": {"name": f"mcp_{command_name}", "arguments": arguments},
             }
-            self._writer.write((json.dumps(msg) + "\n").encode())
-            await self._writer.drain()
+            payload = (json.dumps(msg) + "\n").encode()
+
+            try:
+                self._writer.write(payload)
+                await self._writer.drain()
+            except (ConnectionError, OSError) as e:
+                # Retried only here, where the send itself failed, so the request
+                # cannot have reached Audacity and re-sending cannot run a command
+                # twice - which matters when the command deletes audio. A failure
+                # after the request is on the wire is never retried for that reason:
+                # it is reported instead, below.
+                await self.close()
+                try:
+                    await self.connect()
+                    self._writer.write(payload)
+                    await self._writer.drain()
+                except (ConnectionError, OSError) as retry_error:
+                    await self.close()
+                    raise RuntimeError(
+                        f"Could not reach Audacity to run '{command_name}': {retry_error}. "
+                        "Check that Audacity 4 is running - the bridge listens only while it is open."
+                    ) from e
 
             # NOTE: reads are matched to this call's id, not just "the next line
             # off the wire" - a command that opens a blocking native dialog (e.g.

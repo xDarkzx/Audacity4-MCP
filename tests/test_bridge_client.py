@@ -219,3 +219,70 @@ async def test_unauthorized_error_explains_the_token(monkeypatch):
         await client.call("project-get-info", {})
     await client.close()
     await server.stop()
+
+
+class _RestartableServer:
+    """Serves canned responses on a fixed port, and can be stopped and started
+    again - standing in for Audacity being restarted underneath the client."""
+
+    def __init__(self, response: dict):
+        self.response = response
+        self.port = 0
+        self.calls = 0
+        self._writers = []
+
+    async def _handle(self, reader, writer):
+        self._writers.append(writer)
+        while True:
+            line = await reader.readline()
+            if not line:
+                break
+            self.calls += 1
+            req = json.loads(line)
+            resp = dict(self.response)
+            resp["id"] = req.get("id")
+            writer.write((json.dumps(resp) + "\n").encode())
+            await writer.drain()
+
+    async def start(self, port: int = 0):
+        self.server = await asyncio.start_server(self._handle, "127.0.0.1", port)
+        self.port = self.server.sockets[0].getsockname()[1]
+        return self.port
+
+    async def stop(self):
+        # Server.close() only stops accepting - open connections survive it, so a
+        # client would happily keep talking to the "stopped" server and the test
+        # would prove nothing. Drop the live sockets too, which is what losing the
+        # process actually does.
+        for w in self._writers:
+            w.close()
+        self._writers.clear()
+        self.server.close()
+        await self.server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_reconnects_after_the_peer_restarts():
+    """Restarting Audacity used to cost the next command: this side still held a
+    socket whose is_closing() was False, so the call was spent discovering the
+    peer had gone. The first call after a restart must now just work."""
+    ok = {"jsonrpc": "2.0", "result": {"content": [{"text": "ok", "type": "text"}], "isError": False}}
+
+    server = _RestartableServer(ok)
+    port = await server.start()
+    client = BridgeClient(host="127.0.0.1", port=port)
+
+    assert (await client.call("play-stop", {}))["content"][0]["text"] == "ok"
+
+    # Audacity goes away and comes back on the same port.
+    await server.stop()
+    await asyncio.sleep(0.05)
+    restarted = _RestartableServer(ok)
+    await restarted.start(port)
+    try:
+        result = await client.call("play-stop", {})
+        assert result["content"][0]["text"] == "ok"
+        assert restarted.calls == 1
+    finally:
+        await client.close()
+        await restarted.stop()
