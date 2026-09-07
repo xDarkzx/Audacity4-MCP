@@ -6,6 +6,24 @@ This is early alpha under active daily development.
 
 ## [Unreleased]
 
+### Security: the Auth Token Was World-Readable on Linux and macOS
+
+The auth design held up under audit - the check runs before any method dispatch so no unauthenticated path exists, it fails closed with no token, the comparison is constant-time, and the token is 256 bits from the OS cryptographic source. What did not hold up was how the file gets written.
+
+`std::ofstream` creates with the process umask applied to 0666, so the token was written **0644**. Any local user could read it and drive Audacity with it, which is the entirety of what the token exists to prevent. Windows was covered only incidentally, by the ACL `%LOCALAPPDATA%` already carries, which is why this was invisible while developing there.
+
+The file is now created empty, restricted to owner read/write, and only then written to. Restricting afterwards would leave the token readable for the moment in between. If the permissions cannot be set, no token is written at all: one that others can read is worse than no bridge, because it reads as protected while not being so. Installs that already have a world-readable token are repaired on the way past.
+
+Verified under WSL (Ubuntu 22.04, default umask 0022): the old path produced `0644`, the new one produces `0600`, and the brief `0644` window contains an empty file rather than the token.
+
+This also corrects a claim that had been sitting in the source: that the token was safe because "another user cannot read this directory". That was only ever true on Windows. It is true everywhere now, but the claim preceded the code - the same way the earlier "not reachable from browser JS" claim did.
+
+### Fixed: the Token Could Not Be Found on Linux, and a Rotated One Needed a Restart
+
+Audacity writes the token to `QStandardPaths::AppLocalDataLocation`, which honours `XDG_DATA_HOME`. This client looked in a hardcoded `~/.local/share`, so on any Linux system that sets that variable the token was simply not found and nothing worked at all. Resolved the way Qt resolves it, with macOS and both app-name variants covered too - all checked against a real Linux filesystem, along with the POSIX branch of the path guard.
+
+The token was also read once and cached for the life of the process, so a regenerated one - reset profile, reinstall - left the client sending a stale value until it was restarted. A rejected request provably did not run, so the file is re-read and the call retried once. An explicit `AUDACITY4_MCP_TOKEN` is the caller's own choice and is reported rather than quietly worked around.
+
 ### Fixed: Restarting Audacity No Longer Costs a Command
 
 Restarting Audacity left this client holding a socket that still looked usable — nothing on this side had closed it, so `is_closing()` was `False` — and the next command was written into a dead connection and failed. Every session hit that on its first call after a restart, and the only way through was to call twice.
