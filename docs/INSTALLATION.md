@@ -53,6 +53,55 @@ This deploys to `src/app/bin/Audacity4.exe` (per `CMAKE_INSTALL_PREFIX` in the p
 
 Open or create a project. The `mcp` module has no visible UI — you'll know it's up if this server can connect to it (step 3 below).
 
+### What the install step is for: the DLLs Audacity needs to boot
+
+`Audacity4.exe` is dynamically linked. On its own it is not a runnable program — it imports around two dozen DLLs directly and pulls in about seventy-six once their own dependencies are resolved, and it will not reach a window without all of them plus Qt's plugin directories laid out in the right shape beside it.
+
+This is why the build directory is a dead end rather than just an inconvenient path. `build/audacity-debug/` ends up holding the Qt DLLs and a `platforms/` folder but **no `Audacity4.exe` at all** — the executable only ever appears at the install prefix. Running `cmake --build` and then hunting for something to double-click is the wrong shape of the problem; the install step is what assembles an app.
+
+What `cmake --install` puts in `src/app/bin/`:
+
+| Group | Files |
+| --- | --- |
+| The app | `Audacity4.exe` (~100 MB in a debug build), `qt.conf` |
+| Qt 6 core runtime | `Qt6Cored`, `Qt6Guid`, `Qt6Widgetsd`, `Qt6Qmld`, `Qt6Quickd`, `Qt6Networkd`, `Qt6NetworkAuthd`, `Qt6Svgd`, `Qt6Concurrentd`, `Qt6Core5Compatd`, `Qt6OpenGLd`, `Qt6ShaderToolsd` |
+| Qt Quick / Controls | `Qt6QuickTemplates2d`, `Qt6QuickControls2d` and its per-style pairs (Basic, Fusion, Material, Universal, Imagine, FluentWinUI3, Windows), `Qt6QuickLayoutsd`, `Qt6QuickShapesd`, `Qt6QuickEffectsd`, `Qt6QmlModelsd`, `Qt6QmlMetad`, `Qt6QmlWorkerScriptd`, `Qt6LabsPlatformd`, `Qt6LabsQmlModelsd`, `Qt6Quick3DUtilsd` |
+| MSVC runtime (debug) | `msvcp140d`, `msvcp140d_atomic_wait`, `msvcp140d_codecvt_ids`, `msvcp140_1d`, `msvcp140_2d`, `vcruntime140d`, `vcruntime140_1d`, `vcruntime140_threadsd`, `vccorlib140d`, `concrt140d` (release-named copies ship alongside them) |
+| Audio and codecs | `portaudio_x64`, `sndfile`, `FLAC`, `FLAC++`, `ogg`, `vorbis`, `vorbisenc`, `vorbisfile`, `opus`, `mpg123`, `syn123`, `wavpackdll` |
+| Support libraries | `freetyped`, `harfbuzz`, `libpng16d`, `libexpatd`, `zlibd1`, `icuuc`, `d3dcompiler_47`, `opengl32sw`, `wxbase32ud_vc_x64_custom`, `wxbase32ud_net_vc_x64_custom` |
+| Qt plugin folders | `platforms/qwindowsd.dll` (required — the app cannot start without it), `imageformats/`, `iconengines/`, `tls/`, `networkinformation/`, `generic/` |
+| Qt/app data | `qml/`, `translations/`, `nyquist-plug-ins/`, `nyquist-runtime/` |
+
+The plugin folders have to stay folders. Qt discovers `platforms/qwindowsd.dll` by directory, so flattening everything into one pile is the usual way a hand-copied build fails.
+
+A full recursive scan of the installed tree (115 binaries, 149 distinct imports) resolves entirely inside `src/app/bin/` plus Windows' own system DLLs — with exactly one exception.
+
+**`ucrtbased.dll` is the one the install step cannot give you.** A debug build links against the *debug* Universal C Runtime, which is not part of Windows and is not redistributable, so it is not in the deployed folder and will not be on a machine that only has the MSVC redistributable. It is installed into `C:\Windows\System32` by the Windows SDK's debug runtime component, and the SDK also keeps copies at:
+
+```
+C:\Program Files (x86)\Windows Kits\10\bin\<sdk-version>\x64\ucrt\ucrtbased.dll
+```
+
+If Audacity dies instantly with `ucrtbased.dll was not found`, install the Windows SDK (the "Debugging Tools for Windows" / Universal CRT debug runtime component), or copy that file next to `Audacity4.exe`. Building the release preset avoids the problem entirely — release links against `ucrtbase.dll`, which *is* part of Windows.
+
+**Checking a deployment before blaming the app.** From the `bin` directory:
+
+```powershell
+foreach ($f in "Audacity4.exe", "Qt6Cored.dll", "Qt6Quickd.dll", "qt.conf", "platforms\qwindowsd.dll", "qml") {
+  "{0,-28} {1}" -f $f, (Test-Path $f)
+}
+```
+
+All six must be `True`. If `Audacity4.exe` is missing you skipped `cmake --install`; if only the Qt pieces are missing the install ran against the wrong directory.
+
+| Symptom on launch | Cause |
+| --- | --- |
+| `Qt6Cored.dll was not found` (or any `Qt6*d.dll`) | Running the exe from somewhere other than `src/app/bin`, or the install step never ran |
+| `ucrtbased.dll was not found` | Windows SDK debug runtime not installed — see above |
+| `This application failed to start because no Qt platform plugin could be initialized` | `platforms/qwindowsd.dll` is missing, or the plugin folders were flattened |
+| Window opens blank or unstyled | `qml/` or the QuickControls2 style DLLs did not deploy |
+| `VCRUNTIME140D.dll was not found` | Debug CRT missing — install the Visual Studio C++ workload, or build the release preset |
+
 **Closing it down:** always close Audacity4 cleanly from its own window (or ask it to close), never force-kill the process (`taskkill /F`, Task Manager "End Task", etc.). A force-kill corrupts session-recovery state and causes a recurring "convert project" popup on every subsequent launch until that state is cleared out.
 
 **If a rebuild fails with a file-lock error (`LNK1168`)**: Audacity4.exe is still running and holding the binary open. Close it (cleanly, per above) before rebuilding.
