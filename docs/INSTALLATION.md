@@ -4,7 +4,7 @@ Audacity4MCP has two halves that both need to be running: this Python MCP server
 
 ## 1. Build and run Audacity4-Dev
 
-[**Audacity4-Dev-MCP**](https://github.com/xDarkzx/Audacity4-Dev-MCP) is a fork of Audacity 4 with a `src/mcp/` module added that starts a TCP JSON-RPC server on `127.0.0.1:2212` as soon as Audacity launches. It's built the same way as upstream Audacity 4 (see Audacity's own [BUILDING.md](https://github.com/audacity/audacity/blob/master/BUILDING.md) for installing Qt/CMake/Ninja first) — this section covers the exact commands that work on the tested setup (Windows, MSVC, Ninja) and the fork-specific gotchas BUILDING.md doesn't mention.
+[**Audacity4-Dev-MCP**](https://github.com/xDarkzx/Audacity4-Dev-MCP/tree/feature/mcp-audio-cleanup-pipelines) is a fork of Audacity 4 with a `src/mcp/` module added that starts a TCP JSON-RPC server on `127.0.0.1:2212` as soon as Audacity launches. It's built the same way as upstream Audacity 4 (see Audacity's own [BUILDING.md](https://github.com/audacity/audacity/blob/master/BUILDING.md) for installing Qt/CMake/Ninja first) — this section covers the exact commands that work on the tested setup (Windows, MSVC, Ninja) and the fork-specific gotchas BUILDING.md doesn't mention.
 
 **Prerequisite:** Visual Studio (2022 or newer) with the "Desktop development with C++" workload, plus Qt 6.10, CMake, and Ninja on PATH — see BUILDING.md.
 
