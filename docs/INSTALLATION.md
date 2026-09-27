@@ -170,7 +170,23 @@ or install it as a standalone tool with `pipx install audacity4-mcp`.
 ~/.venvs/audacity4-mcp/bin/audacity4-mcp --help   # confirm it runs
 ```
 
-**Both halves must run as the same user, on the same machine.** The token file is created readable only by its owner, so a server running as a different user cannot read it. The host and port are not configurable — the client always connects to `127.0.0.1:2212` — so Audacity and this server have to be on the same host. In particular, running the server inside WSL or a container while Audacity runs on the Windows host will not work.
+**Both halves must run as the same user, on the same machine.** The token file is created readable only by its owner, so a server running as a different user cannot read it. The host and port are not configurable — the client always connects to `127.0.0.1:2212`, and the bridge itself listens only on loopback (`QHostAddress::LocalHost`) — so Audacity and this server have to be on the same host. Running the server inside WSL or a container while Audacity runs on the Windows host will not work as-is.
+
+### Driving Audacity on another machine
+
+If you do need the server and Audacity on different hosts, tunnel rather than exposing the port. An SSH tunnel makes the remote bridge appear on your own loopback, which is exactly what the client expects, and it encrypts the connection — which plain TCP would not, token included:
+
+```bash
+ssh -L 2212:127.0.0.1:2212 user@host-running-audacity
+```
+
+Then, in the shell where the server runs, supply the token from that machine (its token file is not local, so the normal lookup cannot find it):
+
+```bash
+AUDACITY4_MCP_TOKEN=<contents of the token file on that host> audacity4-mcp
+```
+
+The same applies to WSL and containers: forward the port in rather than changing where the bridge listens. Nothing on either side needs modifying.
 
 ## 3. Authentication (nothing to configure)
 
