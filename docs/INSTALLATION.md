@@ -6,7 +6,22 @@ Audacity4MCP has two halves that both need to be running: this Python MCP server
 
 [**Audacity4-Dev-MCP**](https://github.com/xDarkzx/Audacity4-Dev-MCP/tree/feature/mcp-audio-cleanup-pipelines) is a fork of Audacity 4 with a `src/mcp/` module added that starts a TCP JSON-RPC server on `127.0.0.1:2212` as soon as Audacity launches. It's built the same way as upstream Audacity 4 (see Audacity's own [BUILDING.md](https://github.com/audacity/audacity/blob/master/BUILDING.md) for installing Qt/CMake/Ninja first) — this section covers the exact commands that work on the tested setup (Windows, MSVC, Ninja) and the fork-specific gotchas BUILDING.md doesn't mention.
 
-**Prerequisite:** Visual Studio (2022 or newer) with the "Desktop development with C++" workload, plus Qt 6.10, CMake, and Ninja on PATH — see BUILDING.md.
+**Prerequisite:** Visual Studio (2022 or newer) with the "Desktop development with C++" workload, plus **Qt 6.8 or newer** (tested on 6.10), CMake, and Ninja on PATH — see BUILDING.md.
+
+### Qt components (the usual first failure)
+
+Getting the Qt *version* right is not enough. The build asks for a specific set of modules (`find_package(Qt6 6.8 REQUIRED COMPONENTS ...)` in `muse/buildscripts/cmake/SetupQt6.cmake`), and several are separate tick-boxes in the Qt online installer that are **not selected by default**. A missing one stops `cmake --preset` with a `find_package` error naming the module, which is easy to misread as a broken checkout.
+
+Make sure these are installed for your Qt version:
+
+| Component | Qt installer name |
+| --- | --- |
+| `Core5Compat` | Qt 5 Compatibility Module |
+| `ShaderTools` | Qt Shader Tools |
+| `NetworkAuth` | Qt Network Authorization |
+| `DBus` (Linux only) | Qt D-Bus |
+
+These come with a normal desktop Qt install and rarely need attention: Core, Gui, Widgets, Network, Qml, Quick, QuickControls2, QuickWidgets, Xml, Svg, PrintSupport.
 
 ### Clone it, with submodules
 
@@ -42,6 +57,8 @@ cmake --preset audacity-debug
 ```bash
 cmake --build build/audacity-debug
 ```
+
+The first build takes roughly 20 minutes, give or take depending on your machine. After that it is incremental and much faster.
 
 **Install/deploy** — this is the step that actually produces a runnable `Audacity4.exe`; the raw build directory (`build/audacity-debug/`) does not contain a directly launchable app:
 
@@ -106,15 +123,33 @@ All six must be `True`. If `Audacity4.exe` is missing you skipped `cmake --insta
 
 **If a rebuild fails with a file-lock error (`LNK1168`)**: Audacity4.exe is still running and holding the binary open. Close it (cleanly, per above) before rebuilding.
 
+### Keeping the fork up to date
+
+The fork is a shallow clone of upstream Audacity, so it has no full history and no merge base with `audacity/audacity`. A plain `git pull` from upstream will not behave the way it does in a normal clone. To pick up upstream changes, fetch what you need explicitly:
+
+```bash
+git remote add upstream https://github.com/audacity/audacity.git   # once
+git fetch --unshallow upstream                                     # first time only, this is a big fetch
+git fetch upstream master
+```
+
+Then rebase or merge the MCP branch onto it as you would normally. If you only want to build what is known to work, skip this entirely — the branch is self-contained.
+
 ## 2. Install this server
+
+Requires Python 3.10+. The only runtime dependency is the `mcp` SDK — the bridge to Audacity4-Dev is a plain `asyncio` TCP client, nothing else to install.
+
+```bash
+pip install audacity4-mcp
+```
+
+To work on the server itself, install it from source instead:
 
 ```bash
 git clone https://github.com/xDarkzx/Audacity4-MCP.git
 cd Audacity4-MCP
-pip install -e .
+pip install -e ".[dev]"
 ```
-
-Requires Python 3.10+. The only runtime dependency is the `mcp` SDK — the bridge to Audacity4-Dev is a plain `asyncio` TCP client, nothing else to install.
 
 ## 3. Authentication (nothing to configure)
 
@@ -171,6 +206,23 @@ For Claude Desktop or Claude Code, add to your MCP config (`claude_desktop_confi
 ```
 
 Restart your client. It should now see the full tool list from [TOOLS.md](TOOLS.md).
+
+**If the client cannot start the server**, this is almost always `PATH`. `"command": "audacity4-mcp"` only resolves if that executable is on the `PATH` your MCP client inherits, which is not the case when it lives in a virtual environment — and the client usually reports little more than a failure to connect. Find the real path and use it verbatim:
+
+```bash
+where audacity4-mcp      # Windows
+which audacity4-mcp      # macOS / Linux
+```
+
+```json
+{
+  "mcpServers": {
+    "audacity4": {
+      "command": "C:\\path\\to\\venv\\Scripts\\audacity4-mcp.exe"
+    }
+  }
+}
+```
 
 **Optional — trim the tool list for a specific workflow.** By default every tool loads. To load only what one workflow needs (smaller schema footprint per session), add an `env` block picking a [profile](TOOLS.md#tool-profiles):
 
