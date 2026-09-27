@@ -151,6 +151,27 @@ cd Audacity4-MCP
 pip install -e ".[dev]"
 ```
 
+### Linux and macOS
+
+The server half is plain Python and `asyncio`, with no OS-specific code, so it runs the same everywhere — the untested part is building the fork, not this. Three things differ in practice.
+
+**A system Python will refuse to install into.** Debian, Ubuntu and Fedora mark their Python as externally managed, so `pip install` fails with `error: externally-managed-environment`. Use a virtual environment:
+
+```bash
+python3 -m venv ~/.venvs/audacity4-mcp
+~/.venvs/audacity4-mcp/bin/pip install audacity4-mcp
+```
+
+or install it as a standalone tool with `pipx install audacity4-mcp`.
+
+**The executable may not be on your `PATH`.** A venv install puts it in that venv's `bin/`, and `pip install --user` or `pipx` put it in `~/.local/bin`, which many distributions do not add to `PATH` for non-login shells. Use the absolute path in your MCP client config (see step 5) rather than fighting it:
+
+```bash
+~/.venvs/audacity4-mcp/bin/audacity4-mcp --help   # confirm it runs
+```
+
+**Both halves must run as the same user, on the same machine.** The token file is created readable only by its owner, so a server running as a different user cannot read it. The host and port are not configurable — the client always connects to `127.0.0.1:2212` — so Audacity and this server have to be on the same host. In particular, running the server inside WSL or a container while Audacity runs on the Windows host will not work.
+
 ## 3. Authentication (nothing to configure)
 
 The bridge requires a token on every request. Audacity generates one on first
@@ -165,8 +186,10 @@ same place, so there is normally nothing to set up:
 
 The file is readable only by your own account, which is what keeps other users
 and web pages out — a page you visit can reach the port, but cannot read a local
-file. Set `AUDACITY4_MCP_TOKEN` to override the file, for setups where Audacity's
-profile directory isn't reachable (containers, a bridge on another machine).
+file. Set `AUDACITY4_MCP_TOKEN` to override the file, for the cases where the
+lookup cannot find it — an unusual profile location, or a sandboxed client that
+cannot read outside its own directory. It does not enable a bridge on another
+machine: the host and port are fixed at `127.0.0.1:2212`.
 
 If Audacity has never been started, the token won't exist yet and this server
 will say so, listing every path it looked in.
@@ -190,6 +213,16 @@ asyncio.run(main())
 ```
 
 If this prints real project info (path, tracks, etc.) instead of a connection error, the bridge is working.
+
+To check the bridge is listening at all, before involving Python:
+
+```bash
+netstat -an | findstr 2212        # Windows
+ss -tlnp | grep 2212              # Linux
+lsof -nP -iTCP:2212 -sTCP:LISTEN  # macOS
+```
+
+A listening socket on `127.0.0.1:2212` means the `mcp` module started. Nothing there means you are running stock Audacity rather than the build you made, or it failed to start — check the Audacity window or console.
 
 ## 5. Point your MCP client at it
 

@@ -71,9 +71,10 @@ class BridgeClient:
         return [r / cls.TOKEN_FILENAME for r in roots]
 
     def _resolve_token(self) -> str:
-        """Reads the shared token. AUDACITY4_MCP_TOKEN overrides the file, for
-        setups where Audacity's profile directory isn't reachable (containers,
-        remote bridges)."""
+        """Reads the shared token. AUDACITY4_MCP_TOKEN overrides the file, for the
+        cases where the path lookup cannot find it - an unusual profile location, or
+        a sandboxed client that cannot read outside its own directory. It does not
+        enable a remote bridge: the host and port are fixed at 127.0.0.1:2212."""
         if self._token:
             return self._token
 

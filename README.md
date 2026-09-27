@@ -83,6 +83,8 @@ Both halves have to be running: the modified Audacity that hosts the bridge, and
 pip install audacity4-mcp
 ```
 
+This half is plain Python and runs on Windows, macOS and Linux alike. On Debian, Ubuntu or Fedora the system Python will refuse the install (`externally-managed-environment`) — use a virtual environment or `pipx`, and see [INSTALLATION.md](docs/INSTALLATION.md#linux-and-macos).
+
 Or from source, if you want to change it:
 
 ```bash
