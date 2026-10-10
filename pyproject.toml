@@ -30,7 +30,7 @@ dependencies = [
     # release (renamed/restructured mcp.server.fastmcp, which every tool
     # module here imports as FastMCP) - a clean install with no upper
     # bound resolves 2.x and fails immediately on import.
-    "mcp[cli]>=1.0.0,<2.0.0",
+    "mcp[cli]>=1.0.0,<3.0.0",
 ]
 
 [project.optional-dependencies]
